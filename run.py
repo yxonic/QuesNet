@@ -26,7 +26,7 @@ class Config:
                 setup = {name: value for (name, value) in args._get_kwargs()
                          if name in group_options}
                 conf = os.path.join(args.workspace,
-                                    str(model) + '.conf')
+                                    str(model) + '.json')
                 Model(setup).save_config(conf)
 
             sub.set_defaults(func=save)
@@ -43,7 +43,7 @@ class Train:
     def run(self, args):
         print(args)
         for name in os.listdir(args.workspace):
-            if name.endswith('.conf'):
+            if name.endswith('.json'):
                 Model = get_class(name.split('.')[0])
                 config = os.path.join(args.workspace, name)
                 break
@@ -63,7 +63,7 @@ class Test:
     def run(self, args):
         print(args)
         for name in os.listdir(args.workspace):
-            if name.endswith('.conf'):
+            if name.endswith('.json'):
                 Model = get_class(name.split('.')[0])
                 config = os.path.join(args.workspace, name)
                 break
@@ -77,7 +77,7 @@ class Test:
 
 parser = argparse.ArgumentParser()
 parser.add_argument('-w', '--workspace',
-                    help='workspace dir', default='data/test')
+                    help='workspace dir', default='ws/test')
 subparsers = parser.add_subparsers(title='supported commands', dest='command')
 subparsers.required = True
 
