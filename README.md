@@ -2,11 +2,11 @@
 
 This project provides a good starting point for every deep learning experiment, and free myself from coding for features like configure/save/load a model, resume a training process, testing on each snapshots, etc.
 
-The project is a complete deep hand-written digit recognition example with models written in [PyTorch][http://pytorch.org], but its design makes it easy to convert to other frameworks or applications, as models and training parts are seperate from the main setup-and-run logic.
+The project is a complete deep hand-written digit recognition example with models written in [PyTorch](http://pytorch.org), but its design makes it easy to convert to other frameworks or applications, as models and training parts are seperate from the main setup-and-run logic.
 
 ## Design
 
-There are two main design ideas behind this template: the workspace concept, and the configure-and-run workflow; both are inspired by popular building systems like [Automake][https://www.gnu.org/software/automake/], [CMake][https://cmake.org] and so on. The whole structure is like this:
+There are two main design ideas behind this template: the workspace concept, and the configure-and-run workflow; both are inspired by popular building systems like [Automake](https://www.gnu.org/software/automake/), [CMake](https://cmake.org) and so on. The whole structure is like this:
 
 <p align=center><img width="80%" src="docs/static/img/structure.png" /></p>
 
