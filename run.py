@@ -5,7 +5,9 @@ Main program parsing arguments and running commands
 import argparse
 import os
 import sys
+import logging
 from model import *
+from util import *
 
 commands = ['config', 'train', 'test']
 models = ['simple']
@@ -15,19 +17,28 @@ class Config:
     def __init__(self, parser):
         subs = parser.add_subparsers(title='models available', dest='model')
         subs.required = True
+        group_options = set()
         for model in models:
             sub = subs.add_parser(model)
             group = sub.add_argument_group('setup')
             Model = get_class(model)
             Model.add_arguments(group)
-            group_options = [action.dest for action in group._group_actions]
+            for action in group._group_actions:
+                group_options.add(action.dest)
 
             def save(args):
+                for file in os.listdir(args.workspace):
+                    if file.endswith('.json'):
+                        os.remove(os.path.join(args.workspace, file))
+                model = args.model
+                Model = get_class(model)
                 setup = {name: value for (name, value) in args._get_kwargs()
                          if name in group_options}
                 conf = os.path.join(args.workspace,
                                     str(model) + '.json')
-                Model(setup).save_config(conf)
+                m = Model(setup)
+                print('model: %s, setup: %s' % (model, str(m.args)))
+                save_config(m, conf)
 
             sub.set_defaults(func=save)
 
@@ -37,11 +48,10 @@ class Config:
 
 class Train:
     def __init__(self, parser):
-        parser.add_argument('-N', '--epochs',
+        parser.add_argument('-N', '--epochs', type=int, default=1,
                             help='number of epochs to train')
 
     def run(self, args):
-        print(args)
         for name in os.listdir(args.workspace):
             if name.endswith('.json'):
                 Model = get_class(name.split('.')[0])
@@ -51,8 +61,9 @@ class Train:
             print('you must run config first!')
             sys.exit(1)
 
-        model = Model.load_config(config)
+        model = load_config(Model, config)
         print(model.args)
+        # train(model, args)
 
 
 class Test:
@@ -61,7 +72,6 @@ class Test:
                             help='model snapshot to test with')
 
     def run(self, args):
-        print(args)
         for name in os.listdir(args.workspace):
             if name.endswith('.json'):
                 Model = get_class(name.split('.')[0])
@@ -71,8 +81,9 @@ class Test:
             print('you must run config first!')
             sys.exit(1)
 
-        model = Model.load_config(config)
-        print(model)
+        model = load_config(Model, config)
+        print(model.args)
+        # test(model, args)
 
 
 parser = argparse.ArgumentParser()
@@ -96,7 +107,31 @@ def main():
         os.makedirs(os.path.join(workspace, 'logs'))
     except OSError:
         pass
-    args.func(args)
+
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
+    logFormatter = logging.Formatter("%(asctime)s %(message)s",
+                                     datefmt='%Y-%m-%d %H:%M:%S')
+
+    if args.command != 'config':
+        fileHandler = logging.FileHandler(os.path.join(workspace, 'logs',
+                                                       args.command + '.log'))
+        fileHandler.setFormatter(logFormatter)
+        logger.addHandler(fileHandler)
+
+    consoleHandler = logging.StreamHandler()
+    consoleHandler.setFormatter(logFormatter)
+    logger.addHandler(consoleHandler)
+
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        logging.info('cancelled by user')
+    except Exception as e:
+        import traceback
+        sys.stderr.write(traceback.format_exc())
+        logging.warn('exception occurred: %s', e)
 
 
 def get_class(name):
