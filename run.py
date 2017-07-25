@@ -19,7 +19,7 @@ class Config:
         subs.required = True
         group_options = set()
         for model in models:
-            sub = subs.add_parser(model)
+            sub = subs.add_parser(model, formatter_class=parser_formatter)
             group = sub.add_argument_group('setup')
             Model = get_class(model)
             Model.add_arguments(group)
@@ -86,7 +86,8 @@ class Test:
         # test(model, args)
 
 
-parser = argparse.ArgumentParser()
+parser_formatter = argparse.ArgumentDefaultsHelpFormatter
+parser = argparse.ArgumentParser(formatter_class=parser_formatter)
 parser.add_argument('-w', '--workspace',
                     help='workspace dir', default='ws/test')
 subparsers = parser.add_subparsers(title='supported commands', dest='command')
@@ -95,7 +96,7 @@ subparsers.required = True
 
 def main():
     for command in commands:
-        sub = subparsers.add_parser(command)
+        sub = subparsers.add_parser(command, formatter_class=parser_formatter)
         subcommand = get_class(command)(sub)
         sub.set_defaults(func=subcommand.run)
 
