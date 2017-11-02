@@ -8,6 +8,7 @@ import sys
 import logging
 from model import *
 from util import *
+from commands import *
 
 commands = ['config', 'train', 'test']
 models = ['simple']
@@ -34,6 +35,7 @@ class Config:
                 Model = get_class(model)
                 setup = {name: value for (name, value) in args._get_kwargs()
                          if name in group_options}
+                setup = namedtuple('Setup', setup.keys())(*setup.values())
                 conf = os.path.join(args.workspace,
                                     str(model) + '.json')
                 m = Model(setup)
@@ -48,7 +50,7 @@ class Config:
 
 class Train:
     def __init__(self, parser):
-        parser.add_argument('-N', '--epochs', type=int, default=1,
+        parser.add_argument('-N', '--epochs', type=int, default=10,
                             help='number of epochs to train')
 
     def run(self, args):
@@ -62,8 +64,7 @@ class Train:
             sys.exit(1)
 
         model = load_config(Model, config)
-        print(model.args)
-        # train(model, args)
+        train(model, args)
 
 
 class Test:
@@ -82,8 +83,7 @@ class Test:
             sys.exit(1)
 
         model = load_config(Model, config)
-        print(model.args)
-        # test(model, args)
+        test(model, args)
 
 
 parser_formatter = argparse.ArgumentDefaultsHelpFormatter
@@ -112,8 +112,8 @@ def main():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
-    logFormatter = logging.Formatter("%(asctime)s %(message)s",
-                                     datefmt='%Y-%m-%d %H:%M:%S')
+    logFormatter = ColoredFormatter('%(levelname)s %(asctime)s %(message)s',
+                                    datefmt='%Y-%m-%d %H:%M:%S')
 
     if args.command != 'config':
         fileHandler = logging.FileHandler(os.path.join(workspace, 'logs',
@@ -128,11 +128,11 @@ def main():
     try:
         args.func(args)
     except KeyboardInterrupt:
-        logging.info('cancelled by user')
+        logging.warn('cancelled by user')
     except Exception as e:
         import traceback
         sys.stderr.write(traceback.format_exc())
-        logging.warn('exception occurred: %s', e)
+        logging.error('exception occurred: %s', e)
 
 
 def get_class(name):
