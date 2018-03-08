@@ -1,18 +1,26 @@
 import logging
-import json
+import toml
+import os
+import models
 from collections import namedtuple
 
 
-def save_config(obj, path):
-    f = open(path, 'w')
-    json.dump(obj.args._asdict(), f)
+def make_model(Model, **kwargs):
+    config = namedtuple('Config', kwargs.keys())(*kwargs.values())
+    return Model(config)
+
+
+def save_config(obj, workspace):
+    f = open(os.path.join(workspace, 'config.toml'), 'w')
+    toml.dump({'model': obj.__class__.__name__,
+               'config': obj.config._asdict()}, f)
     f.close()
 
 
-def load_config(Model, path):
-    setup = json.load(open(path, 'r'))
-    setup = namedtuple('Setup', setup.keys())(*setup.values())
-    return Model(setup)
+def load_config(workspace):
+    config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
+    Model = getattr(models, config['model'])
+    return make_model(Model, **config['config'])
 
 
 class bcolors:
