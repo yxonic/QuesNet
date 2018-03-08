@@ -8,7 +8,7 @@ The project is a complete deep hand-written digit recognition example with model
 
 There are two main design ideas behind this template: the workspace concept, and the configure-and-run workflow; both are inspired by popular building systems like [Automake](https://www.gnu.org/software/automake/), [CMake](https://cmake.org) and so on. The whole structure looks like this:
 
-<p align=center><img width="80%" src="docs/static/img/structure.png" /></p>
+<p align=center><img width="80%" src="doc/static/img/structure.png" /></p>
 
 A workspace is where an experiment takes place, and where logs, results and snapshots are saved. In practice, we often want to try different setups and record them all, being able to resume training, do more tests, etc., on each setup we choose. With setups run under seperate workspaces, everything becomes straightforward.
 

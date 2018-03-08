@@ -10,9 +10,9 @@ import logging
 import inspect as ins
 from collections import namedtuple
 
-import models
-import commands
-import utils
+from . import models
+from . import commands
+from . import utils
 
 _parser_formatter = argparse.ArgumentDefaultsHelpFormatter
 parser = argparse.ArgumentParser(formatter_class=_parser_formatter)

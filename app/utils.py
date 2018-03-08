@@ -1,7 +1,7 @@
 import logging
 import toml
 import os
-import models
+from . import models
 from collections import namedtuple
 
 
