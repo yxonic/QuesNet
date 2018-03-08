@@ -5,6 +5,7 @@ from __future__ import print_function
 import argparse
 import os
 import sys
+import shutil
 import logging
 import inspect as ins
 from collections import namedtuple
@@ -80,6 +81,19 @@ class Config:
         pass
 
 
+class Clean:
+    def __init__(self, parser):
+        parser.add_argument('--all', action='store_true',
+                            help='clean the entire workspace')
+
+    def run(self, args):
+        if args.all:
+            shutil.rmtree(args.workspace)
+        else:
+            for file in os.scandir(os.path.join(args.workspace, 'snapshots')):
+                os.remove(file.path)
+
+
 if __name__ == '__main__':
     cmds = {m[0].lower(): m[1]
             for m in ins.getmembers(sys.modules[__name__], ins.isclass)
@@ -106,10 +120,17 @@ if __name__ == '__main__':
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    if args.command != 'config':
+    logFormatter = utils.ColoredFormatter(
+        '%(levelname)s %(asctime)s %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    fileFormatter = logging.Formatter('%(levelname)s %(asctime)s %(message)s',
+                                      datefmt='%Y-%m-%d %H:%M:%S')
+
+    if args.command != 'config' and args.command != 'clean':
         fileHandler = logging.FileHandler(os.path.join(workspace, 'logs',
                                                        args.command + '.log'))
-        fileHandler.setFormatter(logFormatter)
+        fileHandler.setFormatter(fileFormatter)
         logger.addHandler(fileHandler)
 
     consoleHandler = logging.StreamHandler()
