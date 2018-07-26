@@ -1,6 +1,9 @@
+*.egg-info/
 __pycache__/
 *.pyc
 *~
 .DS_Store
 data/
 ws/
+venv/
+docs/_build/

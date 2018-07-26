@@ -1,5 +1,5 @@
 '''
-Main program parsing arguments and running commands
+Main program parsing arguments and running commands.
 '''
 from __future__ import print_function
 import argparse
@@ -22,8 +22,10 @@ subparsers = parser.add_subparsers(title='supported commands', dest='command')
 subparsers.required = True
 
 
-class _Command:
-    def run(self, args):
+class _WorkspaceCommand:
+    """Base class for commands that requires to run in a workspace."""
+
+    def _run(self, args):
         if os.path.exists(os.path.join(args.workspace, 'config.toml')):
             utils.load_config(args.workspace)
         else:
@@ -31,26 +33,54 @@ class _Command:
             sys.exit(1)
 
         model = utils.load_config(args.workspace)
-        command = self.__class__.__name__.lower()
         args = {name: value for (name, value) in args._get_kwargs()
                 if name != 'command' and name != 'func'}
         args = namedtuple('Args', args.keys())(*args.values())
-        getattr(commands, command)(model, args)
+        self.run(model, args)
 
 
-class Train(_Command):
+class Train(_WorkspaceCommand):
+    r"""Command ``train``. See :func:`~app.commands.train`."""
+
     def __init__(self, parser):
+        r"""
+        Args:
+            -N,--epochs (int): number of epochs to train. Default: 10
+        """
         parser.add_argument('-N', '--epochs', type=int, default=10,
                             help='number of epochs to train')
 
+    def run(self, model, args):
+        commands.train(model, args)
 
-class Test(_Command):
+
+class Test(_WorkspaceCommand):
+    r"""Command ``test``. See :func:`~app.commands.test`."""
+
     def __init__(self, parser):
+        r"""
+        Args:
+            -s,--snapshot (str): model snapshot to test with
+        """
         parser.add_argument('-s', '--snapshot',
                             help='model snapshot to test with')
 
+    def run(self, model, args):
+        commands.test(model, args)
+
 
 class Config:
+    r"""Command ``config``,
+
+    Configure a model and its parameters for a workspace.
+    
+    Example:
+        .. code-block:: bash
+            
+            $ python app.run -w ws/test config Simple -foo=5
+            In [ws/test]: configured Simple with Config(foo='5')
+    """
+
     def __init__(self, parser):
         subs = parser.add_subparsers(title='models available', dest='model')
         subs.required = True
@@ -61,7 +91,7 @@ class Config:
             sub = subs.add_parser(model, formatter_class=_parser_formatter)
             group = sub.add_argument_group('config')
             Model = getattr(models, model)
-            Model.add_arguments(group)
+            Model._add_arguments(group)
             for action in group._group_actions:
                 group_options.add(action.dest)
 
@@ -77,16 +107,22 @@ class Config:
 
             sub.set_defaults(func=save)
 
-    def run(self, args):
+    def _run(self, args):
         pass
 
 
 class Clean:
+    r"""Command ``clean``.
+
+    Remove all snapshots in specific workspace. If ``--all`` is specified,
+    clean the entire workspace
+    """
+
     def __init__(self, parser):
         parser.add_argument('--all', action='store_true',
                             help='clean the entire workspace')
 
-    def run(self, args):
+    def _run(self, args):
         if args.all:
             shutil.rmtree(args.workspace)
         else:
@@ -101,7 +137,7 @@ if __name__ == '__main__':
     for command in cmds:
         sub = subparsers.add_parser(command, formatter_class=_parser_formatter)
         subcommand = cmds[command](sub)
-        sub.set_defaults(func=subcommand.run)
+        sub.set_defaults(func=subcommand._run)
 
     args = parser.parse_args()
     workspace = args.workspace
@@ -127,7 +163,7 @@ if __name__ == '__main__':
     fileFormatter = logging.Formatter('%(levelname)s %(asctime)s %(message)s',
                                       datefmt='%Y-%m-%d %H:%M:%S')
 
-    if args.command != 'config' and args.command != 'clean':
+    if issubclass(cmds[args.command], _WorkspaceCommand):
         fileHandler = logging.FileHandler(os.path.join(workspace, 'logs',
                                                        args.command + '.log'))
         fileHandler.setFormatter(fileFormatter)
