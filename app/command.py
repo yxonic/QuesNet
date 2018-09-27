@@ -1,6 +1,5 @@
-'''
-Define commands.
-'''
+"""Define commands."""
+
 import logging
 
 

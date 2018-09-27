@@ -7,3 +7,5 @@ data/
 ws/
 venv/
 docs/_build/
+.idea/
+Pipfile*

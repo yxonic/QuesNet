@@ -1,12 +1,14 @@
 import logging
 import toml
 import os
-from . import models
+
+from . import module
+from .module import Simple
 from collections import namedtuple
 
 
 def make_model(Model, **kwargs):
-    r"""Make model. Parameters are specifed by keyword arguments.
+    """Make model. Parameters are specified by keyword arguments.
 
     Example:
         >>> model = make_model(Simple, foo='bar')
@@ -28,11 +30,11 @@ def save_config(obj, workspace):
 def load_config(workspace):
     r"""Load model configuration from ``workspace``."""
     config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
-    Model = getattr(models, config['model'])
+    Model = getattr(module, config['model'])
     return make_model(Model, **config['config'])
 
 
-class _bcolors:
+class _BColors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKGREEN = '\033[92m'
@@ -45,18 +47,18 @@ class _bcolors:
 
 def _colored(text, color, bold=False):
     if bold:
-        return _bcolors.BOLD + color + text + _bcolors.ENDC
+        return _BColors.BOLD + color + text + _BColors.ENDC
     else:
-        return color + text + _bcolors.ENDC
+        return color + text + _BColors.ENDC
 
 
 #: Log level to color mapping.
 LOG_COLORS = {
-    'WARNING': _bcolors.WARNING,
-    'INFO': _bcolors.OKGREEN,
-    'DEBUG': _bcolors.OKBLUE,
-    'CRITICAL': _bcolors.WARNING,
-    'ERROR': _bcolors.FAIL
+    'WARNING': _BColors.WARNING,
+    'INFO': _BColors.OKGREEN,
+    'DEBUG': _BColors.OKBLUE,
+    'CRITICAL': _BColors.WARNING,
+    'ERROR': _BColors.FAIL
 }
 
 
@@ -70,7 +72,7 @@ class ColoredFormatter(logging.Formatter):
             datefmt (str): date format string
             use_color (bool): whether to use colored_output. Default: ``True``
         """
-        super().__init__(fmt, datefmt=datefmt)
+        super().__init__(fmt, datefmt)
         self.use_color = use_color
 
     def format(self, record):

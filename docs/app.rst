@@ -5,15 +5,15 @@ app.run
 
 app.commands
 ------------
-.. automodule:: app.commands
+.. automodule:: app.command
    :members:
 
 app.models
 ----------
-.. automodule:: app.models
+.. automodule:: app.module
    :members:
 
 app.utils
 ---------
-.. automodule:: app.utils
+.. automodule:: app.util
    :members:
