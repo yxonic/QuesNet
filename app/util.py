@@ -7,20 +7,8 @@ from .module import Simple
 from collections import namedtuple
 
 
-def make_model(Model, **kwargs):
-    """Make model. Parameters are specified by keyword arguments.
-
-    Example:
-        >>> model = make_model(Simple, foo='bar')
-        >>> print(model.config)
-        Config(foo='bar')
-    """
-    config = namedtuple('Config', kwargs.keys())(*kwargs.values())
-    return Model(config)
-
-
 def save_config(obj, workspace):
-    r"""Save model configuration to ``workspace``."""
+    """Save model configuration to ``workspace``."""
     f = open(os.path.join(workspace, 'config.toml'), 'w')
     toml.dump({'model': obj.__class__.__name__,
                'config': obj.config._asdict()}, f)
@@ -28,10 +16,10 @@ def save_config(obj, workspace):
 
 
 def load_config(workspace):
-    r"""Load model configuration from ``workspace``."""
+    """Load model configuration from ``workspace``."""
     config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
     Model = getattr(module, config['model'])
-    return make_model(Model, **config['config'])
+    return Model.build(**config['config'])
 
 
 class _BColors:
@@ -63,10 +51,10 @@ LOG_COLORS = {
 
 
 class ColoredFormatter(logging.Formatter):
-    r"""Log formatter that provides colored output."""
+    """Log formatter that provides colored output."""
 
     def __init__(self, fmt, datefmt, use_color=True):
-        r"""
+        """
         Args:
             fmt (str): message format string
             datefmt (str): date format string
@@ -76,7 +64,7 @@ class ColoredFormatter(logging.Formatter):
         self.use_color = use_color
 
     def format(self, record):
-        r"""Format the specified record as text.
+        """Format the specified record as text.
 
         If ``self.use_color`` is ``True``, format log messages according to
         :data:`~app.utils.LOG_COLORS`.

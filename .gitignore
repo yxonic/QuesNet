@@ -6,6 +6,6 @@ __pycache__/
 data/
 ws/
 venv/
-docs/_build/
+docs/build/
 .idea/
 Pipfile*

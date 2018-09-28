@@ -2,13 +2,13 @@
 Main program parsing arguments and running commands.
 """
 from __future__ import print_function
+import abc
 import argparse
 import os
 import sys
 import shutil
 import logging
 import inspect as ins
-from abc import ABC, abstractmethod
 from collections import namedtuple
 
 from . import command
@@ -24,9 +24,9 @@ _subparsers = _parser.add_subparsers(title='supported commands',
 _subparsers.required = True
 
 
-class _Command(ABC):
+class _Command(abc.ABC):
     """Command interface."""
-    @abstractmethod
+    @abc.abstractmethod
     def _run(self, args):
         pass
 
@@ -53,7 +53,7 @@ class _WorkspaceCommand(_Command):
 
 
 class Train(_WorkspaceCommand):
-    """Command ``train``. See :func:`~app.commands.train`."""
+    """Command ``train``. See :func:`~app.command.train`."""
 
     def __init__(self, parser):
         r"""
@@ -68,7 +68,7 @@ class Train(_WorkspaceCommand):
 
 
 class Test(_WorkspaceCommand):
-    """Command ``test``. See :func:`~app.commands.test`."""
+    """Command ``test``. See :func:`~app.command.test`."""
 
     def __init__(self, parser):
         r"""
@@ -98,8 +98,17 @@ class Config(_Command):
         subs = parser.add_subparsers(title='models available', dest='model')
         subs.required = True
         group_options = set()
-        model_names = [m[0] for m in ins.getmembers(module, ins.isclass)
+
+        def _is_local_class(obj):
+            # if ins.isclass(obj) and obj.__module__ == module.__name__:
+            if ins.isclass(obj) and not ins.isabstract(obj):
+                return True
+            else:
+                return False
+
+        model_names = [m[0] for m in ins.getmembers(module, _is_local_class)
                        if not m[0].startswith('_')]
+
         for model in model_names:
             sub = subs.add_parser(model, formatter_class=_parser_formatter)
             group = sub.add_argument_group('config')
@@ -147,10 +156,10 @@ if __name__ == '__main__':
     cmds = {m[0].lower(): m[1]
             for m in ins.getmembers(sys.modules[__name__], ins.isclass)
             if not m[0].startswith('_')}
-    for command in cmds:
-        _sub = _subparsers.add_parser(command,
+    for cmd in cmds:
+        _sub = _subparsers.add_parser(cmd,
                                       formatter_class=_parser_formatter)
-        subcommand = cmds[command](_sub)
+        subcommand = cmds[cmd](_sub)
         _sub.set_defaults(func=subcommand._run)
 
     _args = _parser.parse_args()
