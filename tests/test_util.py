@@ -4,6 +4,7 @@ from _pytest.capture import CaptureFixture
 
 
 def test_colored():
+    # test colored output w/o bold font
     assert app.util._colored('hello', app.util.LOG_COLORS['ERROR']) == \
         '\x1b[91mhello\x1b[0m'
     assert app.util._colored('hello', app.util.LOG_COLORS['ERROR'], True) == \

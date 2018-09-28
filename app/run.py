@@ -169,7 +169,7 @@ def main(args):
     except OSError:
         pass
 
-    logger = logging.getLogger(args.command)
+    logger = logging.getLogger()
     logFormatter = util.ColoredFormatter(
         '%(levelname)s %(asctime)s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'

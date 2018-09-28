@@ -31,6 +31,16 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
 
     import app.run
 
+    # error if workspace command called before config
+    with pytest.raises(SystemExit) as e:
+        args = app.run.main_parser.parse_args(
+            ['-w', ws_path, 'train']
+        )
+        app.run.main(args)
+    assert e.value.code == 1
+    assert capsys.readouterr().err.strip() == 'you must run config first!'
+
+    # test config
     args = app.run.main_parser.parse_args(
         ['-w', ws_path, 'config', 'ModelTest']
     )
@@ -47,6 +57,7 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
     assert capsys.readouterr().err.strip().endswith(
         'configured ModelTest with Config(x=-3)')
 
+    # test train/test args
     args = app.run.main_parser.parse_args(
         ['-w', ws_path, 'train', '-N', '3']
     )
@@ -61,6 +72,7 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
     assert model.config.x == -3
     assert args.snapshot == '15'
 
+    # test clean
     args = app.run.main_parser.parse_args(
         ['-w', ws_path, 'clean']
     )
@@ -73,14 +85,7 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
     app.run.main(args)
     assert not ws.exists()
 
-    with pytest.raises(SystemExit) as e:
-        args = app.run.main_parser.parse_args(
-            ['-w', ws_path, 'train']
-        )
-        app.run.main(args)
-    assert e.value.code == 1
-    assert capsys.readouterr().err.strip() == 'you must run config first!'
-
+    # print usage on wrong command-line arguments
     with pytest.raises(SystemExit) as e:
         args = app.run.main_parser.parse_args(
             ['-w', ws_path, 'foo']
@@ -88,3 +93,8 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
         app.run.main(args)
     assert e.value.code == 2
     assert capsys.readouterr().err.strip().startswith('usage:')
+
+    # reset logging state as app.run.main messed up with it
+    import logging, importlib
+    logging.shutdown()
+    importlib.reload(logging)
