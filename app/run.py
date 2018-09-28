@@ -13,7 +13,9 @@ from collections import namedtuple, defaultdict
 
 from . import command
 from . import util
-from . import model as mm
+from . import models as mm
+
+logging.getLogger().setLevel(logging.INFO)
 
 
 def _sub_class_checker(cls):
@@ -53,7 +55,7 @@ class WorkspaceCommand(Command):
         if os.path.exists(os.path.join(args.workspace, 'config.toml')):
             util.load_config(args.workspace)
         else:
-            print('you must run config first!')
+            print('you must run config first!', file=sys.stderr)
             sys.exit(1)
 
         model = util.load_config(args.workspace)
@@ -129,7 +131,8 @@ class Config(Command):
                           if name in group_options[_model]}
                 m = _Model.build(**config)
                 print('In [%s]: configured %s with %s' %
-                      (args.workspace, _model, str(m.config)))
+                      (args.workspace, _model, str(m.config)),
+                      file=sys.stderr)
                 util.save_config(m, args.workspace)
 
             sub.set_defaults(func=save)
@@ -153,8 +156,8 @@ class Clean(Command):
         if args.all:
             shutil.rmtree(args.workspace)
         else:
-            for file in os.scandir(os.path.join(args.workspace, 'snapshots')):
-                os.remove(file.path)
+            shutil.rmtree(os.path.join(args.workspace, 'snapshots'))
+            os.makedirs(os.path.join(args.workspace, 'snapshots'))
 
 
 def main(args):
@@ -166,9 +169,7 @@ def main(args):
     except OSError:
         pass
 
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-
+    logger = logging.getLogger(args.command)
     logFormatter = util.ColoredFormatter(
         '%(levelname)s %(asctime)s %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
@@ -186,14 +187,15 @@ def main(args):
     consoleHandler.setFormatter(logFormatter)
     logger.addHandler(consoleHandler)
 
+    rv = None
     try:
         return args.func(args)
-    except KeyboardInterrupt:
-        logging.warning('cancelled by user')
-    except Exception as e:
+    except KeyboardInterrupt:  # pragma: no cover
+        logger.warning('cancelled by user')
+    except Exception as e:  # pragma: no cover
         import traceback
         sys.stderr.write(traceback.format_exc())
-        logging.error('exception occurred: %s', e)
+        logger.error('exception occurred: %s', e)
 
 
 commands = {m[0].lower(): m[1]

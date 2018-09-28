@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 
-from . import model
+from . import models
 
 
 def save_config(obj, workspace):
@@ -18,7 +18,7 @@ def save_config(obj, workspace):
 def load_config(workspace):
     """Load model configuration from ``workspace``."""
     config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
-    Model = getattr(model, config['model'])
+    Model = getattr(models, config['model'])
     return Model.build(**config['config'])
 
 
@@ -53,15 +53,13 @@ LOG_COLORS = {
 class ColoredFormatter(logging.Formatter):
     """Log formatter that provides colored output."""
 
-    def __init__(self, fmt, datefmt, use_color=True):
+    def __init__(self, fmt, datefmt):
         """
         Args:
             fmt (str): message format string
             datefmt (str): date format string
-            use_color (bool): whether to use colored_output. Default: ``True``
         """
         super().__init__(fmt, datefmt)
-        self.use_color = use_color
 
     def format(self, record):
         """Format the specified record as text.
@@ -70,7 +68,7 @@ class ColoredFormatter(logging.Formatter):
         :data:`~app.utils.LOG_COLORS`.
         """
         levelname = record.levelname
-        if self.use_color and levelname in LOG_COLORS:
+        if levelname in LOG_COLORS:
             record.levelname = _colored(record.levelname[0],
                                         LOG_COLORS[record.levelname])
         return logging.Formatter.format(self, record)

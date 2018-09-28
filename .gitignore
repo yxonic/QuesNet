@@ -1,13 +1,17 @@
 *.egg-info/
 __pycache__/
+.pytest_cache/
+.zcache/
 *.pyc
 *~
 .DS_Store
+.coverage
+
 data/
 ws/
-venv/
 docs/build/
+
 .idea/
+
+# remove this line to use pipenv
 Pipfile*
-.pytest_cache/
-.zcache/

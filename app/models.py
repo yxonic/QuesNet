@@ -17,7 +17,7 @@ class Model(abc.ABC):
     @abc.abstractmethod
     def _add_arguments(cls, parser: argparse.ArgumentParser):
         """Add arguments to an argparse subparser."""
-        pass
+        pass  # pragma: no cover
 
     @classmethod
     def build(cls, **kwargs):
@@ -54,6 +54,3 @@ class Simple(Model):
     def _add_arguments(cls, parser):
         parser.add_argument('-foo', default=10, type=int,
                             help='dumb param')
-
-    def __init__(self, config):
-        super().__init__(config)
