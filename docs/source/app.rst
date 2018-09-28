@@ -3,17 +3,17 @@ app.run
 .. automodule:: app.run
    :members:
 
-app.commands
+app.command
 ------------
 .. automodule:: app.command
    :members:
 
 app.models
 ----------
-.. automodule:: app.module
+.. automodule:: app.models
    :members:
 
-app.utils
+app.util
 ---------
 .. automodule:: app.util
    :members:
