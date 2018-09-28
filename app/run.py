@@ -9,32 +9,47 @@ import sys
 import shutil
 import logging
 import inspect as ins
-from collections import namedtuple
+from collections import namedtuple, defaultdict
 
 from . import command
-from . import module
 from . import util
+from . import model as mm
+
+
+def _sub_class_checker(cls):
+    def rv(obj):
+        if ins.isclass(obj) and not ins.isabstract(obj) \
+                and issubclass(obj, cls):
+            return True
+        else:
+            return False
+    return rv
+
+
+models = [m[0] for m in ins.getmembers(mm, _sub_class_checker(mm.Model))
+          if not m[0].startswith('_')]
 
 _parser_formatter = argparse.ArgumentDefaultsHelpFormatter
-_parser = argparse.ArgumentParser(formatter_class=_parser_formatter)
-_parser.add_argument('-w', '--workspace',
-                     help='workspace dir', default='ws/test')
-_subparsers = _parser.add_subparsers(title='supported commands',
-                                     dest='command')
+main_parser = util._ArgumentParser(formatter_class=_parser_formatter,
+                                   prog='python -m app.run')
+main_parser.add_argument('-w', '--workspace',
+                         help='workspace dir', default='ws/test')
+_subparsers = main_parser.add_subparsers(title='supported commands',
+                                         dest='command')
 _subparsers.required = True
 
 
-class _Command(abc.ABC):
+class Command(abc.ABC):
     """Command interface."""
     @abc.abstractmethod
-    def _run(self, args):
+    def run(self, args):
         pass
 
 
-class _WorkspaceCommand(_Command):
+class WorkspaceCommand(Command):
     """Base class for commands that requires to run in a workspace."""
 
-    def _run(self, args):
+    def run(self, args):
         if os.path.exists(os.path.join(args.workspace, 'config.toml')):
             util.load_config(args.workspace)
         else:
@@ -45,14 +60,14 @@ class _WorkspaceCommand(_Command):
         args = {name: value for (name, value) in args._get_kwargs()
                 if name != 'command' and name != 'func'}
         args = namedtuple('Args', args.keys())(*args.values())
-        self.run(model, args)
+        return self.run_with(model, args)
 
-    def run(self, model, args):
-        # to be overridden
+    @abc.abstractmethod
+    def run_with(self, model, args):
         pass
 
 
-class Train(_WorkspaceCommand):
+class Train(WorkspaceCommand):
     """Command ``train``. See :func:`~app.command.train`."""
 
     def __init__(self, parser):
@@ -63,11 +78,11 @@ class Train(_WorkspaceCommand):
         parser.add_argument('-N', '--epochs', type=int, default=10,
                             help='number of epochs to train')
 
-    def run(self, model, args):
-        command.train(model, args)
+    def run_with(self, model, args):
+        return command.train(model, args)
 
 
-class Test(_WorkspaceCommand):
+class Test(WorkspaceCommand):
     """Command ``test``. See :func:`~app.command.test`."""
 
     def __init__(self, parser):
@@ -78,11 +93,11 @@ class Test(_WorkspaceCommand):
         parser.add_argument('-s', '--snapshot',
                             help='model snapshot to test with')
 
-    def run(self, model, args):
-        command.test(model, args)
+    def run_with(self, model, args):
+        return command.test(model, args)
 
 
-class Config(_Command):
+class Config(Command):
     """Command ``config``,
 
     Configure a model and its parameters for a workspace.
@@ -97,43 +112,33 @@ class Config(_Command):
     def __init__(self, parser):
         subs = parser.add_subparsers(title='models available', dest='model')
         subs.required = True
-        group_options = set()
+        group_options = defaultdict(set)
 
-        def _is_local_class(obj):
-            # if ins.isclass(obj) and obj.__module__ == module.__name__:
-            if ins.isclass(obj) and not ins.isabstract(obj):
-                return True
-            else:
-                return False
-
-        model_names = [m[0] for m in ins.getmembers(module, _is_local_class)
-                       if not m[0].startswith('_')]
-
-        for model in model_names:
+        for model in models:
             sub = subs.add_parser(model, formatter_class=_parser_formatter)
             group = sub.add_argument_group('config')
-            Model = getattr(module, model)
+            Model = getattr(mm, model)
             Model._add_arguments(group)
             for action in group._group_actions:
-                group_options.add(action.dest)
+                group_options[model].add(action.dest)
 
             def save(args):
                 _model = args.model
-                _Model = getattr(module, _model)
+                _Model = getattr(mm, _model)
                 config = {name: value for (name, value) in args._get_kwargs()
-                          if name in group_options}
-                m = util.make_model(_Model, **config)
+                          if name in group_options[_model]}
+                m = _Model.build(**config)
                 print('In [%s]: configured %s with %s' %
                       (args.workspace, _model, str(m.config)))
                 util.save_config(m, args.workspace)
 
             sub.set_defaults(func=save)
 
-    def _run(self, args):
+    def run(self, args):
         pass
 
 
-class Clean(_Command):
+class Clean(Command):
     """Command ``clean``.
 
     Remove all snapshots in specific workspace. If ``--all`` is specified,
@@ -144,7 +149,7 @@ class Clean(_Command):
         parser.add_argument('--all', action='store_true',
                             help='clean the entire workspace')
 
-    def _run(self, args):
+    def run(self, args):
         if args.all:
             shutil.rmtree(args.workspace)
         else:
@@ -152,18 +157,8 @@ class Clean(_Command):
                 os.remove(file.path)
 
 
-if __name__ == '__main__':
-    cmds = {m[0].lower(): m[1]
-            for m in ins.getmembers(sys.modules[__name__], ins.isclass)
-            if not m[0].startswith('_')}
-    for cmd in cmds:
-        _sub = _subparsers.add_parser(cmd,
-                                      formatter_class=_parser_formatter)
-        subcommand = cmds[cmd](_sub)
-        _sub.set_defaults(func=subcommand._run)
-
-    _args = _parser.parse_args()
-    workspace = _args.workspace
+def main(args):
+    workspace = args.workspace
     try:
         os.makedirs(os.path.join(workspace, 'snapshots'))
         os.makedirs(os.path.join(workspace, 'results'))
@@ -181,9 +176,9 @@ if __name__ == '__main__':
     fileFormatter = logging.Formatter('%(levelname)s %(asctime)s %(message)s',
                                       datefmt='%Y-%m-%d %H:%M:%S')
 
-    if issubclass(cmds[_args.command], _WorkspaceCommand):
+    if issubclass(commands[args.command], WorkspaceCommand):
         fileHandler = logging.FileHandler(
-            os.path.join(workspace, 'logs', _args.command + '.log'))
+            os.path.join(workspace, 'logs', args.command + '.log'))
         fileHandler.setFormatter(fileFormatter)
         logger.addHandler(fileHandler)
 
@@ -192,10 +187,23 @@ if __name__ == '__main__':
     logger.addHandler(consoleHandler)
 
     try:
-        _args.func(_args)
+        return args.func(args)
     except KeyboardInterrupt:
         logging.warning('cancelled by user')
     except Exception as e:
         import traceback
         sys.stderr.write(traceback.format_exc())
         logging.error('exception occurred: %s', e)
+
+
+commands = {m[0].lower(): m[1]
+            for m in ins.getmembers(sys.modules[__name__],
+                                    _sub_class_checker(Command))}
+for _cmd in commands:
+    _sub = _subparsers.add_parser(_cmd,
+                                  formatter_class=_parser_formatter)
+    _sub.set_defaults(func=commands[_cmd](_sub).run)
+
+
+if __name__ == '__main__':
+    main(main_parser.parse_args())

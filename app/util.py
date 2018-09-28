@@ -1,10 +1,10 @@
 import logging
 import toml
 import os
+import sys
+import argparse
 
-from . import module
-from .module import Simple
-from collections import namedtuple
+from . import model
 
 
 def save_config(obj, workspace):
@@ -18,7 +18,7 @@ def save_config(obj, workspace):
 def load_config(workspace):
     """Load model configuration from ``workspace``."""
     config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
-    Model = getattr(module, config['model'])
+    Model = getattr(model, config['model'])
     return Model.build(**config['config'])
 
 
@@ -74,3 +74,17 @@ class ColoredFormatter(logging.Formatter):
             record.levelname = _colored(record.levelname[0],
                                         LOG_COLORS[record.levelname])
         return logging.Formatter.format(self, record)
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def __init__(self, raise_error=False, **kwargs):
+        super().__init__(**kwargs)
+        self.raise_error = raise_error
+
+    def error(self, message):
+        if self.raise_error:
+            raise ValueError(message)
+        # customize error message
+        self.print_usage(sys.stderr)
+        err = _colored('error:', LOG_COLORS['ERROR'], True)
+        self.exit(2, '%s %s\n' % (err, message))

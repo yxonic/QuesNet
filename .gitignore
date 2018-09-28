@@ -9,3 +9,5 @@ venv/
 docs/build/
 .idea/
 Pipfile*
+.pytest_cache/
+.zcache/
