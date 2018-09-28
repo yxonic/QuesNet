@@ -13,5 +13,4 @@ docs/build/
 
 .idea/
 
-# remove this line to use pipenv
-Pipfile*
+Pipfile.lock

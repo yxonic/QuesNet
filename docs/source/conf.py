@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.abspath('../..'))
 
 # -- Project information -----------------------------------------------------
 
-project = 'dl_boilerplate'
+project = 'pretrain'
 copyright = '2018, Yu Yin'
 author = 'Yu Yin'
 
@@ -115,7 +115,7 @@ html_static_path = ['_static']
 # -- Options for HTMLHelp output ---------------------------------------------
 
 # Output file base name for HTML help builder.
-htmlhelp_basename = 'dl_boilerplatedoc'
+htmlhelp_basename = 'pretraindoc'
 
 
 # -- Options for LaTeX output ------------------------------------------------
@@ -142,7 +142,7 @@ latex_elements = {
 # (source start file, target name, title,
 #  author, documentclass [howto, manual, or own class]).
 latex_documents = [
-    (master_doc, 'dl_boilerplate.tex', 'dl\\_boilerplate Documentation',
+    (master_doc, 'pretrain.tex', 'dl\\_boilerplate Documentation',
      'Yu Yin', 'manual'),
 ]
 
@@ -152,7 +152,7 @@ latex_documents = [
 # One entry per manual page. List of tuples
 # (source start file, name, description, authors, manual section).
 man_pages = [
-    (master_doc, 'dl_boilerplate', 'dl_boilerplate Documentation',
+    (master_doc, 'pretrain', 'pretrain Documentation',
      [author], 1)
 ]
 
@@ -163,8 +163,8 @@ man_pages = [
 # (source start file, target name, title, author,
 #  dir menu entry, description, category)
 texinfo_documents = [
-    (master_doc, 'dl_boilerplate', 'dl_boilerplate Documentation',
-     author, 'dl_boilerplate', 'One line description of project.',
+    (master_doc, 'pretrain', 'pretrain Documentation',
+     author, 'pretrain', 'One line description of project.',
      'Miscellaneous'),
 ]
 
