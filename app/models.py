@@ -17,22 +17,17 @@ class Model(abc.ABC):
     @abc.abstractmethod
     def _add_arguments(cls, parser: argparse.ArgumentParser):
         """Add arguments to an argparse subparser."""
-        pass  # pragma: no cover
+        raise NotImplementedError
 
     @classmethod
     def build(cls, **kwargs):
-        """Build module. Parameters are specified by keyword arguments.
-
-        Example:
-            >>> model = Simple.build(foo=3)
-            >>> print(model.config)
-            Config(foo=3)
-        """
+        """Build model. Parameters are specified by keyword arguments."""
         config = namedtuple('Config', kwargs.keys())(*kwargs.values())
         return cls(config)
 
     @classmethod
     def parse(cls, args):
+        """Parse command-line options and build model."""
         parser = util._ArgumentParser(prog='', add_help=False,
                                       raise_error=True)
         cls._add_arguments(parser)
@@ -47,10 +42,37 @@ class Model(abc.ABC):
         self.config = config
 
 
-class Simple(Model):
-    """A toy class to demonstrate how to add model arguments."""
-
+class RNN(Model):
+    """Sequence-to-sequence models based on RNN. Supports different input
+    forms (by word / by char), different RNN types (LSTM/GRU), """
     @classmethod
     def _add_arguments(cls, parser):
-        parser.add_argument('-foo', default=10, type=int,
-                            help='dumb param')
+        parser.add_argument('-input', '-i', default='word',
+                            choices=['char', 'word', 'both'],
+                            help='input type')
+        parser.add_argument('-rnn', '-r', default='LSTM',
+                            choices=['LSTM', 'GRU'], help='RNN type')
+        parser.add_argument('-rnn_size', '-s', default=500, type=int,
+                            help='size of rnn hidden states')
+        parser.add_argument('-layers', '-l', default=1, type=int,
+                            help='number of layers')
+        parser.add_argument('-bi_enc', '-b', action='store_true',
+                            help='use bi-directional encoder')
+
+
+class ELMo(Model):
+    @classmethod
+    def _add_arguments(cls, parser):
+        pass
+
+
+class ULMFiT(Model):
+    @classmethod
+    def _add_arguments(cls, parser):
+        pass
+
+
+class TransformerLM(Model):
+    @classmethod
+    def _add_arguments(cls, parser):
+        pass

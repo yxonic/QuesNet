@@ -45,7 +45,7 @@ class Command(abc.ABC):
     """Command interface."""
     @abc.abstractmethod
     def run(self, args):
-        pass
+        raise NotImplementedError
 
 
 class WorkspaceCommand(Command):
@@ -66,7 +66,7 @@ class WorkspaceCommand(Command):
 
     @abc.abstractmethod
     def run_with(self, model, args):
-        pass
+        raise NotImplementedError
 
 
 class Train(WorkspaceCommand):

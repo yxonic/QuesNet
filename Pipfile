@@ -1,11 +1,13 @@
 [[source]]
-url = "https://pypi.org/simple"
+url = "https://mirrors.ustc.edu.cn/pypi/web/simple"
 verify_ssl = true
 name = "pypi"
 
 [packages]
 toml = "*"
-torch = ">=0.4.0"
+tqdm = "*"
+torch = "*"
+torchtext = "*"
 
 [dev-packages]
 sphinx = "*"

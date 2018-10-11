@@ -14,9 +14,6 @@ def test_model():
     model2 = ModelTest.build(x=10, y=10)
     assert model1.config == model2.config
 
-    model = models.Simple.parse([])
-    assert model.config.foo == 10
-
     with pytest.raises(ValueError) as e:
         ModelTest.parse([])
 
