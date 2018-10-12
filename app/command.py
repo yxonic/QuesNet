@@ -3,7 +3,9 @@
 import logging
 import os
 import sys
-import torch as T
+
+import torch
+
 from .dataloader import DataLoader
 
 
@@ -42,5 +44,5 @@ def prep(args):
         os.makedirs(args.output_dir)
     except OSError:
         pass
-    T.save(data.state_dict(), os.path.join(args.output_dir, 'loader.pt'))
-    T.save(vocab, os.path.join(args.output_dir, 'vocab.pt'))
+    torch.save(data.state_dict(), os.path.join(args.output_dir, 'loader.pt'))
+    torch.save(vocab, os.path.join(args.output_dir, 'vocab.pt'))

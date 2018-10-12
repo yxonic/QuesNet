@@ -1,9 +1,9 @@
 """Pre-process input text, tokenizing, building vocabs, and pre-train word
 level vectors."""
 
-import torchtext as tt
 import csv
-import os
+
+import torchtext as tt
 
 
 def _cut(x):
