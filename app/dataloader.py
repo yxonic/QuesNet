@@ -7,24 +7,30 @@ import os
 
 
 def _cut(x):
-    if all(ord(c) > 127 for c in x):
+    if ord(x[0]) > 127:
         return list(x)
     else:
         return [x]
 
 
 class CharTokenizer:
+    """Split text into characters."""
     def __init__(self, max_len=400):
         self.max_len = max_len
 
     def __call__(self, s):
         rv = []
         for x in s.split():
-            rv.extend(_cut(x))
+            if ord(x[0]) > 127:
+                # cut chinese word into chars
+                rv.extend(list(x))
+            else:
+                rv.append(x)
         return rv[:self.max_len]
 
 
 class WordTokenizer:
+    """Split text into words."""
     def __init__(self, max_len=400):
         self.max_len = max_len
 
@@ -33,9 +39,10 @@ class WordTokenizer:
 
 
 class MultipleField(tt.data.RawField):
+    """A field with multiple sub-fields."""
     def __init__(self, *args):
         super().__init__()
-        self.fields = args
+        self.fields = list(args)
         self._vocab = None
 
     def preprocess(self, x):
@@ -48,7 +55,7 @@ class MultipleField(tt.data.RawField):
                                              **kwargs))
         return rv
 
-    def build_vocab(self, *args):
+    def build_vocab(self, *args, **kwargs):
         for i, f in enumerate(self.fields):
             sources = []
             for arg in args:
@@ -57,7 +64,8 @@ class MultipleField(tt.data.RawField):
                                 arg.fields.items() if field is self]
                 else:
                     sources.append(arg)
-            f.build_vocab(*[[x[i] for x in source] for source in sources])
+            f.build_vocab(*[[x[i] for x in source] for source in sources],
+                          **kwargs)
         self._vocab = [f.vocab for f in self.fields]
 
     @property
@@ -66,17 +74,18 @@ class MultipleField(tt.data.RawField):
 
     @vocab.setter
     def vocab(self, vocab):
+        self._vocab = vocab
         for v, f in zip(vocab, self.fields):
             f.vocab = v
 
 
 class DataLoader:
-    """Data loader class for vocab building, data splitting, loading/saving,
-    etc."""
-    def __init__(self, dirname, raw_file=None,
-                 input_type='char', max_len=400):
+    """Data loader class for vocab building, data splitting, and data
+    loading."""
+    def __init__(self, raw_file=None, input_type='char', max_len=400,
+                 split_ratio=(0.8, 0.1, 0.1), split_rand_seed=None):
         if raw_file is None:
-            # load previous splits
+            # return empty loader
             return
 
         # build text field
@@ -111,6 +120,7 @@ class DataLoader:
         field_to_index = {f: header.index(f) for f in fields.keys()}
         examples = [tt.data.Example.fromCSV(line, fields, field_to_index)
                     for line in reader]
+        self.examples = examples
 
         field_list = []
         for field in fields.values():
@@ -118,43 +128,59 @@ class DataLoader:
                 field_list.extend(field)
             else:
                 field_list.append(field)
+        self.field_list = field_list
 
-        self.dataset = tt.data.Dataset(examples, field_list)
+        dataset = tt.data.Dataset(examples, field_list)
 
         # split data
+        self.split_ratio = list(split_ratio)
+        self.split_rand_seed = split_rand_seed
+        train_set, valid_set, test_set = dataset.split(
+            split_ratio=self.split_ratio,
+            random_state=self.split_rand_seed
+        )
 
-        # build vocab
-        self.text_field.build_vocab(self.dataset)
+        self.splits = [train_set, valid_set, test_set]
 
-        # save to data dir
-        fn = os.path.join(dirname, os.path.basename(raw_file))
-        print(fn)
+    def build_vocab(self, **kwargs):
+        self.text_field.build_vocab(self.splits[0], **kwargs)
+
+    def state_dict(self):
+        return {
+            'examples': self.examples,
+            'field_list': self.field_list,
+            'split_ratio': self.split_ratio,
+            'split_rand_seed': self.split_rand_seed
+        }
+
+    @classmethod
+    def load_state_dict(cls, state_dict):
+        rv = cls()
+        rv.examples = state_dict['examples']
+        rv.field_list = state_dict['field_list']
+        rv.text_field = rv.field_list[0]
+        rv.split_ratio = state_dict['split_ratio']
+        rv.split_rand_seed = state_dict['split_rand_seed']
+        dataset = tt.data.Dataset(rv.examples, rv.field_list)
+        train_set, valid_set, test_set = dataset.split(
+            split_ratio=rv.split_ratio,
+            random_state=rv.split_rand_seed
+        )
+        rv.splits = [train_set, valid_set, test_set]
+        return rv
 
 
 if __name__ == '__main__':
-    import time
-    then = time.time()
-    _ = DataLoader('', raw_file='data/questions.tsv',
-                   input_type='char')
-    now = time.time()
-    print(now - then)
-    then = now
-
-    _ = DataLoader('', raw_file='data/questions.tsv',
-                   input_type='word')
-    now = time.time()
-    print(now - then)
-    then = now
-
-    data = DataLoader('', raw_file='data/questions.tsv',
+    data = DataLoader(raw_file='data/questions.head.tsv',
                       input_type='both')
-    now = time.time()
-    print(now - then)
-    then = now
 
-    train_iter = tt.data.BucketIterator(dataset=data.dataset, batch_size=4)
+    train_iter, valid_iter, test_iter = \
+        tt.data.BucketIterator.splits(data.splits, batch_sizes=[8, 32, 32],
+                                      sort_key=lambda x: len(x.content[0]),
+                                      sort_within_batch=True)
+
     b = next(iter(train_iter))
     print('lens:', [x.item() for x in b.content[0][1]])
 
-    vocab = data.char_field.vocab
-    print(' '.join(vocab.itos[x] for x in b.content[0][0].t()[0]))
+    cv = data.char_field.vocab
+    print(' '.join(cv.itos[x] for x in b.content[0][0].t()[0]))

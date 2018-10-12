@@ -47,7 +47,7 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
     app.run.main(args)
     assert ws.join('config.toml').check(file=1)
     assert capsys.readouterr().err.strip().endswith(
-        'configured ModelTest with Config(x=10)')
+        'configured ModelTest with {\'x\': 10}')
 
     args = app.run.main_parser.parse_args(
         ['-w', ws_path, 'config', 'ModelTest', '-x=-3']
@@ -55,7 +55,7 @@ def test_main(tmpdir: py.path.local, capsys: CaptureFixture):
     app.run.main(args)
     assert ws.join('config.toml').check(file=1)
     assert capsys.readouterr().err.strip().endswith(
-        'configured ModelTest with Config(x=-3)')
+        'configured ModelTest with {\'x\': -3}')
 
     # test train/test args
     args = app.run.main_parser.parse_args(

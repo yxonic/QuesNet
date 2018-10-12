@@ -47,9 +47,8 @@ class RNN(Model):
     forms (by word / by char), different RNN types (LSTM/GRU), """
     @classmethod
     def _add_arguments(cls, parser):
-        parser.add_argument('-input', '-i', default='word',
-                            choices=['char', 'word', 'both'],
-                            help='input type')
+        parser.add_argument('-vocab', '-v', required=True, help='vocab file')
+        parser.add_argument('-emb', '-e', help='pretrained vectors')
         parser.add_argument('-rnn', '-r', default='LSTM',
                             choices=['LSTM', 'GRU'], help='RNN type')
         parser.add_argument('-rnn_size', '-s', default=500, type=int,

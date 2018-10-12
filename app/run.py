@@ -52,17 +52,15 @@ class WorkspaceCommand(Command):
     """Base class for commands that requires to run in a workspace."""
 
     def run(self, args):
-        if os.path.exists(os.path.join(args.workspace, 'config.toml')):
-            util.load_config(args.workspace)
-        else:
+        if not os.path.exists(os.path.join(args.workspace, 'config.toml')):
             print('you must run config first!', file=sys.stderr)
             sys.exit(1)
 
-        model = util.load_config(args.workspace)
+        model_cls, config = util.load_config(args.workspace)
         args = {name: value for (name, value) in args._get_kwargs()
                 if name != 'command' and name != 'func'}
         args = namedtuple('Args', args.keys())(*args.values())
-        return self.run_with(model, args)
+        return self.run_with(model_cls(**config), args)
 
     @abc.abstractmethod
     def run_with(self, model, args):
@@ -73,11 +71,11 @@ class Train(WorkspaceCommand):
     """Command ``train``. See :func:`~app.command.train`."""
 
     def __init__(self, parser):
-        r"""
+        """
         Args:
             -N,--epochs (int): number of epochs to train. Default: 10
         """
-        parser.add_argument('-N', '--epochs', type=int, default=10,
+        parser.add_argument('-epochs', '-N', type=int, default=10,
                             help='number of epochs to train')
 
     def run_with(self, model, args):
@@ -88,7 +86,7 @@ class Test(WorkspaceCommand):
     """Command ``test``. See :func:`~app.command.test`."""
 
     def __init__(self, parser):
-        r"""
+        """
         Args:
             -s,--snapshot (str): model snapshot to test with
         """
@@ -97,6 +95,31 @@ class Test(WorkspaceCommand):
 
     def run_with(self, model, args):
         return command.test(model, args)
+
+
+class Prep(Command):
+    def __init__(self, parser):
+        parser.add_argument('-input', '-i', help='raw input file',
+                            default='data/questions.head.tsv')
+        parser.add_argument('-input_type', '-t', default='char',
+                            choices=['char', 'word', 'both'],
+                            help='input type')
+        parser.add_argument('-split_ratio', '-s', default=[0.8, 0.2, 0.2],
+                            nargs='+', type=float,
+                            help='ratio of train/valid/test dataset')
+        parser.add_argument('-split_rand_seed', type=int,
+                            help='random state for splitting')
+        parser.add_argument('-max_len', type=int, default=400,
+                            help='maximum length')
+        parser.add_argument('-max_size', type=int,
+                            help='maximum vocab size')
+        parser.add_argument('-min_freq', type=int, default=1,
+                            help='minimum frequency of word')
+        parser.add_argument('-output_dir', '-o', required=True,
+                            help='output directory')
+
+    def run(self, args):
+        return command.prep(args)
 
 
 class Config(Command):
@@ -126,14 +149,12 @@ class Config(Command):
 
             def save(args):
                 _model = args.model
-                _Model = getattr(mm, _model)
                 config = {name: value for (name, value) in args._get_kwargs()
                           if name in group_options[_model]}
-                m = _Model.build(**config)
                 print('In [%s]: configured %s with %s' %
-                      (args.workspace, _model, str(m.config)),
+                      (args.workspace, _model, str(config)),
                       file=sys.stderr)
-                util.save_config(m, args.workspace)
+                util.save_config(_model, config, args.workspace)
 
             sub.set_defaults(func=save)
 
@@ -187,7 +208,6 @@ def main(args):
     consoleHandler.setFormatter(logFormatter)
     logger.addHandler(consoleHandler)
 
-    rv = None
     try:
         return args.func(args)
     except KeyboardInterrupt:  # pragma: no cover

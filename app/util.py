@@ -7,11 +7,11 @@ import argparse
 from . import models
 
 
-def save_config(obj, workspace):
+def save_config(model_name, config, workspace):
     """Save model configuration to ``workspace``."""
     f = open(os.path.join(workspace, 'config.toml'), 'w')
-    toml.dump({'model': obj.__class__.__name__,
-               'config': obj.config._asdict()}, f)
+    toml.dump({'model': model_name,
+               'config': config}, f)
     f.close()
 
 
@@ -19,7 +19,7 @@ def load_config(workspace):
     """Load model configuration from ``workspace``."""
     config = toml.load(open(os.path.join(workspace, 'config.toml'), 'r'))
     Model = getattr(models, config['model'])
-    return Model.build(**config['config'])
+    return Model, config['config']
 
 
 class _BColors:
