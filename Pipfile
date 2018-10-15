@@ -8,6 +8,7 @@ toml = "*"
 tqdm = "*"
 torch = "*"
 torchtext = "*"
+tensorboardX = "*"
 
 [dev-packages]
 sphinx = "*"
@@ -16,4 +17,4 @@ pytest = "*"
 pytest-cov = "*"
 
 [requires]
-python_version = "3.7"
+python_version = "3.6"

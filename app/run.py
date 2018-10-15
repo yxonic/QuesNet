@@ -78,6 +78,16 @@ class Train(WorkspaceCommand):
         """
         parser.add_argument('-epochs', '-N', type=int, default=10,
                             help='number of epochs to train')
+        parser.add_argument('--resume', '-r', action='store_true',
+                            help='resume training')
+        parser.add_argument('-batch_size', '-bs', type=int, default=16,
+                            help='batch size')
+        parser.add_argument('-logging_level', default='INFO',
+                            help='model snapshot to test with')
+        parser.add_argument('-log_every', type=int, default=16,
+                            help='write stats every # samples')
+        parser.add_argument('-save_every', type=int, default=-1,
+                            help='save model every # batches')
 
     def run_with(self, model, args):
         return command.train(model, args)
@@ -171,6 +181,8 @@ class Clean(Command):
     """
 
     def __init__(self, parser):
+        parser.add_argument('-l', action='store_true',
+                            help='clean logs')
         parser.add_argument('--all', action='store_true',
                             help='clean the entire workspace')
 
@@ -178,6 +190,9 @@ class Clean(Command):
         if args.all:
             shutil.rmtree(args.workspace)
         else:
+            if args.l:
+                shutil.rmtree((os.path.join(args.workspace, 'logs')))
+                os.makedirs(os.path.join(args.workspace, 'logs'))
             shutil.rmtree(os.path.join(args.workspace, 'snapshots'))
             os.makedirs(os.path.join(args.workspace, 'snapshots'))
 
