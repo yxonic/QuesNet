@@ -16,7 +16,7 @@ from .dataloader import DataLoader
 from .util import DelayedKeyboardInterrupt
 
 
-def train(model, args):  # pragma: no cover
+def train(model, args):
     """Train the model. See :class:`~app.run.Train` for ``args``."""
     logger = logging.getLogger(__name__)
     logger.setLevel(args.logging_level)
@@ -53,7 +53,7 @@ def train(model, args):  # pragma: no cover
         initial = train_iter._iterations_this_epoch
     else:
         if args.resume:
-            logger.warning('nothing to resume')
+            logger.warning('nothing to resume, starting from scratch')
         elif os.path.exists(state_path):
             print('has previous training state, overwrite? (y/N) ', end='')
             c = input()
@@ -71,16 +71,23 @@ def train(model, args):  # pragma: no cover
     writer = SummaryWriter(current_run)
 
     for epoch in range(start_epoch, args.epochs):
-        epoch_iter = islice(train_iter, epoch_size - initial)
-
-        model.train()
+        epoch_iter = iter(tqdm(islice(train_iter, epoch_size - initial),
+                               total=epoch_size,
+                               initial=initial,
+                               desc=f'Epoch {epoch+1:3d}: ',
+                               ncols=80, unit='bz', disable=debug))
+        initial = 0
 
         try:
-            for batch in tqdm(epoch_iter, total=epoch_size,
-                              initial=initial,
-                              desc=f'Epoch {epoch:3d}: ',
-                              ncols=80, unit='bz', disable=debug):
+            # training
+            model.train()
+            while True:
                 with DelayedKeyboardInterrupt():
+                    # critical section on one batch
+                    try:
+                        batch = next(epoch_iter)
+                    except StopIteration:
+                        break
                     i = train_iter._iterations_this_epoch
                     n_samples += len(batch)
 
@@ -105,28 +112,25 @@ def train(model, args):  # pragma: no cover
                         )
                         torch.save(model.state_dict(), snapshot_path)
 
-            loss_avg = []  # clear loss after one epoch
-            initial = 0  # clear initial
+            # save after one epoch
+            snapshot_path = os.path.join(args.workspace,
+                                         f'snapshots/model.{epoch+1}.pt')
+            torch.save(model.state_dict(), snapshot_path)
+
+            # validation
+            model.eval()
+            with torch.no_grad():
+                loss = 0.
+                for batch in tqdm(valid_iter, ncols=80, desc='    Valid: ',
+                                  unit='bz', disable=debug):
+                    loss += model.lm_loss(batch.content).item()
+                writer.add_scalar('train/eval_loss',
+                                  loss / len(valid_iter), epoch)
 
         except KeyboardInterrupt:
             _save_state(args.workspace, current_run, model, optim,
                         train_iter, loss_avg)
             raise
-
-        # save after one epoch
-        snapshot_path = os.path.join(args.workspace,
-                                     f'snapshots/model.{epoch+1}.pt')
-        torch.save(model.state_dict(), snapshot_path)
-
-        # validation
-        model.eval()
-        with torch.no_grad():
-            loss = 0.
-            for batch in tqdm(valid_iter, ncols=80, desc='    Valid: ',
-                              unit='bz', disable=debug):
-                loss += model.lm_loss(batch.content).item()
-            writer.add_scalar('train/eval_loss',
-                              loss / len(valid_iter), epoch)
 
 
 def _save_state(workspace, current_run, model, optim, train_iter, loss_avg):
@@ -141,7 +145,7 @@ def _save_state(workspace, current_run, model, optim, train_iter, loss_avg):
     }, state_path)
 
 
-def test(model, args):  # pragma: no cover
+def test(model, args):
     """Test the model. See :class:`~app.run.Test` for ``args``."""
     logging.info('Testing...')
     logging.info(model.config)
