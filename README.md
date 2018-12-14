@@ -3,5 +3,6 @@
 ## Usage
 
 ```sh
-python -m app.run config OnmtModel
+fret config RNN -v <vocab_file>
+fret train
 ```

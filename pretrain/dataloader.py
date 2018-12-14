@@ -15,6 +15,7 @@ def _cut(x):
 
 class CharTokenizer:
     """Split text into characters."""
+
     def __init__(self, max_len=400):
         self.max_len = max_len
 
@@ -31,6 +32,7 @@ class CharTokenizer:
 
 class WordTokenizer:
     """Split text into words."""
+
     def __init__(self, max_len=400):
         self.max_len = max_len
 
@@ -40,6 +42,7 @@ class WordTokenizer:
 
 class MultipleField(tt.data.RawField):
     """A field with multiple sub-fields."""
+
     def __init__(self, *args):
         super().__init__()
         self.fields = list(args)
@@ -82,6 +85,7 @@ class MultipleField(tt.data.RawField):
 class DataLoader:
     """Data loader class for vocab building, data splitting, and data
     loading."""
+
     def __init__(self, raw_file=None, input_type='char', max_len=400,
                  split_ratio=(0.8, 0.1, 0.1), split_rand_seed=None):
         if raw_file is None:
