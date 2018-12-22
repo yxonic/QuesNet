@@ -2,7 +2,7 @@
 import logging
 import os
 import sys
-import time
+import datetime
 from itertools import islice
 from tqdm import tqdm
 
@@ -15,7 +15,7 @@ from torchtext import data
 from tensorboardX import SummaryWriter
 
 from .dataloader import DataLoader
-from .util import DelayedKeyboardInterrupt
+from .util import critical
 
 
 class Train(fret.Command):
@@ -82,7 +82,8 @@ def train(ws, args):
                 sys.exit(1)
 
         n_samples = 0  # track total #samples for plotting
-        current_run = ws.log_path / ('run-%d/' % time.time())
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        current_run = ws.log_path / ('run-%s/' % now)
         loss_avg = []
         start_epoch = 0
         initial = 0
@@ -100,33 +101,29 @@ def train(ws, args):
         try:
             # training
             model.train()
-            while True:
-                with DelayedKeyboardInterrupt():
-                    # critical section on one batch
-                    try:
-                        batch = next(epoch_iter)
-                    except StopIteration:
-                        break
-                    i = train_iter._iterations_this_epoch
-                    n_samples += len(batch)
+            for batch in critical(epoch_iter):
+                # critical section on one batch
 
-                    # backprop on one batch
-                    optim.zero_grad()
-                    loss = model.loss(batch.content)
-                    loss.backward()
-                    optim.step()
+                i = train_iter._iterations_this_epoch
+                n_samples += len(batch)
 
-                    # log loss
-                    loss_avg.append(loss.item())
-                    if args.log_every == len(loss_avg):
-                        writer.add_scalar('train/loss', mean(loss_avg),
-                                          n_samples)
-                        loss_avg = []
+                # backprop on one batch
+                optim.zero_grad()
+                loss = model.loss(batch.content)
+                loss.backward()
+                optim.step()
 
-                    # save model
-                    if args.save_every > 0 and i % args.save_every == 0:
-                        cp_path = ws / f'model.{epoch}.{i}.pt'
-                        torch.save(model.state_dict(), str(cp_path))
+                # log loss
+                loss_avg.append(loss.item())
+                if args.log_every == len(loss_avg):
+                    writer.add_scalar('train/loss', mean(loss_avg),
+                                      n_samples)
+                    loss_avg = []
+
+                # save model
+                if args.save_every > 0 and i % args.save_every == 0:
+                    cp_path = ws / f'model.{epoch}.{i}.pt'
+                    torch.save(model.state_dict(), str(cp_path))
 
             # save after one epoch
             cp_path = ws.checkpoint_path / f'model.{epoch+1}.pt'
