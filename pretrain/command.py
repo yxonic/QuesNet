@@ -26,8 +26,6 @@ class Train(fret.Command):
                             help='resume training')
         parser.add_argument('-batch_size', '-bs', type=int, default=16,
                             help='batch size')
-        parser.add_argument('-logging_level', default='INFO',
-                            help='model snapshot to test with')
         parser.add_argument('-log_every', type=int, default=16,
                             help='write stats every # samples')
         parser.add_argument('-save_every', type=int, default=-1,
@@ -39,7 +37,6 @@ class Train(fret.Command):
 
 def train(ws, args):
     logger = ws.logger('train')
-    logger.setLevel(args.logging_level)
 
     logger.info('Training...')
 
@@ -115,7 +112,7 @@ def train(ws, args):
 
                     # backprop on one batch
                     optim.zero_grad()
-                    loss = model.lm_loss(batch.content)
+                    loss = model.loss(batch.content)
                     loss.backward()
                     optim.step()
 

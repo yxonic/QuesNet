@@ -1,54 +1,41 @@
+import math
 import fret
 
+import numpy as np
 import torch
-import torch.nn
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence
 
 
-class RNN(fret.Module, torch.nn.Module):
+@fret.configurable
+class RNN(nn.Module):
     """Sequence-to-sequence models based on RNN. Supports different input
     forms (by word / by char), different RNN types (LSTM/GRU), """
 
-    @classmethod
-    def add_arguments(cls, parser):
-        parser.add_argument('-vocab', '-v', required=True, help='vocab file')
-        parser.add_argument('-emb', '-e', help='pretrained vectors')
-        parser.add_argument('-emb_size', '-es', default=200, type=int,
-                            help='size of embedding vectors')
-        parser.add_argument('-rnn', '-r', default='LSTM',
-                            choices=['LSTM', 'GRU'], help='RNN type')
-        parser.add_argument('-rnn_size', '-rs', default=500, type=int,
-                            help='size of rnn hidden states')
-        parser.add_argument('-layers', '-l', default=1, type=int,
-                            help='number of layers')
-        parser.add_argument('-bi_enc', '-b', action='store_true',
-                            help='use bi-directional encoder')
-
-    def __init__(self, **config):
-        super().__init__(**config)
-        torch.nn.Module.__init__(self)
-        config = self.config
-        vocab = torch.load(config.vocab)
+    def __init__(self,
+                 vocab=(None, 'vocab file'),
+                 emb=(None, 'pretrained vectors'),
+                 emb_size=(200, 'size of embedding vectors'),
+                 rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
+                 rnn_size=(500, 'size of rnn hidden states'),
+                 layers=(1, 'number of layers')):
+        super(RNN, self).__init__()
+        vocab = torch.load(vocab)
         vocab_size = len(vocab.stoi)
         emb_size = 200
 
-        self.embedding = torch.nn.Embedding(vocab_size, emb_size)
-        if config.rnn == 'GRU':
-            self.rnn = torch.nn.GRU(emb_size, config.rnn_size,
-                                    config.layers)
-            self.h0 = torch.nn.Parameter(torch.rand(config.layers, 1,
-                                                    config.rnn_size))
+        self.embedding = nn.Embedding(vocab_size, emb_size)
+        if rnn == 'GRU':
+            self.rnn = nn.GRU(emb_size, rnn_size, layers)
+            self.h0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
         else:
-            self.rnn = torch.nn.LSTM(emb_size, config.rnn_size,
-                                     config.layers)
-            self.h0 = torch.nn.Parameter(torch.rand(config.layers, 1,
-                                                    config.rnn_size))
-            self.c0 = torch.nn.Parameter(torch.rand(config.layers, 1,
-                                                    config.rnn_size))
-        self.output = torch.nn.Linear(config.rnn_size, vocab_size)
+            self.rnn = nn.LSTM(emb_size, rnn_size, layers)
+            self.h0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
+            self.c0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
+        self.output = nn.Linear(rnn_size, vocab_size)
 
-    def lm_loss(self, batch):
+    def loss(self, batch):
         x, lens = batch
         lens -= 1
         input = x[:-1, :]
@@ -100,3 +87,158 @@ class TransformerLM(fret.Module):
 
     def forward(self, *input):
         pass
+
+
+@fret.configurable
+class BERT(torch.nn.Module):
+    """ Transformer with Self-Attentive Blocks"""
+
+    def __init__(self,
+                 vocab_size=(0, 'size of vocabulary'),
+                 dim=(768, 'dimension of hidden layer in transformer encoder'),
+                 n_layers=(12, 'numher of hidden Layers'),
+                 n_heads=(12, 'numher of heads in multi-headed attn layers'),
+                 dim_ff=(768 * 4, 'dimension of intermediate layers in '
+                                  'positionwise feedforward net'),
+                 p_drop_hidden=(0.1, 'probability of dropout of hid Layers'),
+                 p_drop_attn=(0.1, 'probability of dropout of attn Layers'),
+                 max_len=(512, 'maximum length for positional embeddings'),
+                 n_segments=2):
+        super(BERT, self).__init__()
+        cfg = self.config
+        self.embed = Embeddings(cfg)
+        self.blocks = \
+            torch.nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
+
+    def forward(self, x, seg, mask):
+        h = self.embed(x, seg)
+        for block in self.blocks:
+            h = block(h, mask)
+        return h
+
+
+def gelu(x):
+    "Implementation of the gelu activation function by Hugging Face"
+    return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
+
+
+class LayerNorm(nn.Module):
+    "A layernorm module in the TF style (epsilon inside the square root)."
+
+    def __init__(self, cfg, variance_epsilon=1e-12):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(cfg.dim))
+        self.beta = nn.Parameter(torch.zeros(cfg.dim))
+        self.variance_epsilon = variance_epsilon
+
+    def forward(self, x):
+        u = x.mean(-1, keepdim=True)
+        s = (x - u).pow(2).mean(-1, keepdim=True)
+        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
+        return self.gamma * x + self.beta
+
+
+class Embeddings(nn.Module):
+    "The embedding module from word, position and token_type embeddings."
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.tok_embed = nn.Embedding(cfg.vocab_size, cfg.dim)
+        self.pos_embed = nn.Embedding(cfg.max_len, cfg.dim)
+        self.seg_embed = nn.Embedding(cfg.n_segments, cfg.dim)
+
+        self.norm = LayerNorm(cfg)
+        self.drop = nn.Dropout(cfg.p_drop_hidden)
+
+    def forward(self, x, seg):
+        seq_len = x.size(1)
+        pos = torch.arange(seq_len, dtype=torch.long, device=x.device)
+        pos = pos.unsqueeze(0).expand_as(x) # (S,) -> (B, S)
+
+        e = self.tok_embed(x) + self.pos_embed(pos) + self.seg_embed(seg)
+        return self.drop(self.norm(e))
+
+
+class MultiHeadedSelfAttention(nn.Module):
+    """ Multi-Headed Dot Product Attention """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.proj_q = nn.Linear(cfg.dim, cfg.dim)
+        self.proj_k = nn.Linear(cfg.dim, cfg.dim)
+        self.proj_v = nn.Linear(cfg.dim, cfg.dim)
+        self.drop = nn.Dropout(cfg.p_drop_attn)
+        self.scores = None  # for visualization
+        self.n_heads = cfg.n_heads
+
+    def forward(self, x, mask):
+        """
+        x, q(query), k(key), v(value) : (B(batch_size), S(seq_len), D(dim))
+        mask : (B(batch_size) x S(seq_len))
+        * split D(dim) into (H(n_heads), W(width of head)) ; D = H * W
+        """
+        # (B, S, D) -proj-> (B, S, D) -split-> (B, S, H, W) -trans-> (B, H, S, W)
+        q, k, v = self.proj_q(x), self.proj_k(x), self.proj_v(x)
+        q, k, v = (split_last(x, (self.n_heads, -1)).transpose(1, 2)
+                   for x in [q, k, v])
+        # (B, H, S, W) @ (B, H, W, S) -> (B, H, S, S) -softmax-> (B, H, S, S)
+        scores = q @ k.transpose(-2, -1) / np.sqrt(k.size(-1))
+        if mask is not None:
+            mask = mask[:, None, None, :].float()
+            scores -= 10000.0 * (1.0 - mask)
+        scores = self.drop(F.softmax(scores, dim=-1))
+        # (B, H, S, S) @ (B, H, S, W) -> (B, H, S, W) -trans-> (B, S, H, W)
+        h = (scores @ v).transpose(1, 2).contiguous()
+        # -merge-> (B, S, D)
+        h = merge_last(h, 2)
+        self.scores = scores
+        return h
+
+
+class PositionWiseFeedForward(nn.Module):
+    """ FeedForward Neural Networks for each position """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.fc1 = nn.Linear(cfg.dim, cfg.dim_ff)
+        self.fc2 = nn.Linear(cfg.dim_ff, cfg.dim)
+        #self.activ = lambda x: activ_fn(cfg.activ_fn, x)
+
+    def forward(self, x):
+        # (B, S, D) -> (B, S, D_ff) -> (B, S, D)
+        return self.fc2(gelu(self.fc1(x)))
+
+
+class Block(nn.Module):
+    """ Transformer Block """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.attn = MultiHeadedSelfAttention(cfg)
+        self.proj = nn.Linear(cfg.dim, cfg.dim)
+        self.norm1 = LayerNorm(cfg)
+        self.pwff = PositionWiseFeedForward(cfg)
+        self.norm2 = LayerNorm(cfg)
+        self.drop = nn.Dropout(cfg.p_drop_hidden)
+
+    def forward(self, x, mask):
+        h = self.attn(x, mask)
+        h = self.norm1(x + self.drop(self.proj(h)))
+        h = self.norm2(h + self.drop(self.pwff(h)))
+        return h
+
+
+def split_last(x, shape):
+    "split the last dimension to given shape"
+    shape = list(shape)
+    assert shape.count(-1) <= 1
+    if -1 in shape:
+        shape[shape.index(-1)] = int(x.size(-1) / -np.prod(shape))
+    return x.view(*x.size()[:-1], *shape)
+
+
+def merge_last(x, n_dims):
+    "merge the last n_dims to a dimension"
+    s = x.size()
+    assert n_dims > 1 and n_dims < len(s)
+    return x.view(*s[:-n_dims], -1)
