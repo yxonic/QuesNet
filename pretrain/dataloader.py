@@ -6,6 +6,21 @@ import csv
 import torchtext as tt
 
 
+def load_questions(filename):
+    """Read question file as data list. Same behavior on same file."""
+    pass
+
+
+def load_labels(filename, type):
+    """Read label file as label list. Same behavior on same file."""
+    pass
+
+
+class DataIter:
+    """Iterator on data and labels, with states for save and restore."""
+    pass
+
+
 def _cut(x):
     if ord(x[0]) > 127:
         return list(x)

@@ -5,17 +5,63 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.rnn import pack_padded_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
+
+
+class Trainer:
+    def __init__(self, feature_extractor):
+        pass
+
+    def pretrain(self):
+        pass
+
+    def eval(self):
+        pass
+
+    def save_state(self):
+        pass
+
+    def load_state(self):
+        pass
+
+    def save_model(self, tag):
+        pass
+
+    def load_model(self, tag):
+        pass
+
+
+@fret.configurable
+class _FeatureExtractor:
+    def make_batch(self, data):
+        """Make batch from input data (python data / np arrays -> tensors)"""
+        pass
+
+    def forward(self, batch):
+        """Returns a sequence of features on a batch of data"""
+        pass
+
+    def pretrain_loss(self, batch):
+        """Returns pretraining loss on a batch of data"""
+        pass
+
+
+@fret.configurable
+class _Predictor:
+    def __init__(self, out_dim):
+        pass
+
+    def forward(self, features):
+        pass
 
 
 @fret.configurable
 class RNN(nn.Module):
-    """Sequence-to-sequence models based on RNN. Supports different input
-    forms (by word / by char), different RNN types (LSTM/GRU), """
+    """Sequence-to-sequence feature extractor based on RNN. Supports different
+    input forms and different RNN types (LSTM/GRU), """
 
     def __init__(self,
                  vocab=(None, 'vocab file'),
-                 emb=(None, 'pretrained vectors'),
                  emb_size=(200, 'size of embedding vectors'),
                  rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
                  rnn_size=(500, 'size of rnn hidden states'),
@@ -23,7 +69,6 @@ class RNN(nn.Module):
         super(RNN, self).__init__()
         vocab = torch.load(vocab)
         vocab_size = len(vocab.stoi)
-        emb_size = 200
 
         self.embedding = nn.Embedding(vocab_size, emb_size)
         if rnn == 'GRU':
@@ -35,31 +80,40 @@ class RNN(nn.Module):
             self.c0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
         self.output = nn.Linear(rnn_size, vocab_size)
 
-    def loss(self, batch):
+    def forward(self, batch: PackedSequence):
+        emb = self.embedding(batch.data)
+        h = self.init_h(batch.batch_sizes[0])
+        y, h = self.rnn(PackedSequence(emb, batch.batch_sizes), h)
+        return y
+
+    def pretrain_loss(self, batch):
         x, lens = batch
         lens -= 1
-        input = x[:-1, :]
-        h = self.init_h(x)
+        input = pack_padded_sequence(x[:-1, :], lens)
+        y_true = pack_padded_sequence(x[1:, :], lens)
 
-        emb = self.embedding(input)
-        y, _ = self.rnn(pack_padded_sequence(emb, lens), h)
-
+        y = self(input)
         y_pred = self.output(y.data)
-        y_true = pack_padded_sequence(x[1:, :], lens).data
-
-        loss = F.cross_entropy(y_pred, y_true)
+        loss = F.cross_entropy(y_pred, y_true.data)
         return loss
 
-    def init_h(self, batch):
+    def classification(self, n_classes):
+        clf_head = nn.Linear(self.config.rnn_size, n_classes)
+        return nn.Sequential(self, clf_head)
+
+    def multi_labeling(self, n_labels):
+        pass
+
+    def value_prediction(self, dim=1):
+        pass
+
+    def init_h(self, batch_size):
         size = list(self.h0.size())
-        size[1] = batch.size(1)
+        size[1] = batch_size
         if self.config.rnn == 'GRU':
             return self.h0.expand(size)
         else:
             return self.h0.expand(size), self.c0.expand(size)
-
-    def forward(self, *input):
-        pass
 
 
 class ELMo(fret.Module):
@@ -229,7 +283,6 @@ class Block(nn.Module):
 
 
 def split_last(x, shape):
-    "split the last dimension to given shape"
     shape = list(shape)
     assert shape.count(-1) <= 1
     if -1 in shape:
@@ -238,7 +291,6 @@ def split_last(x, shape):
 
 
 def merge_last(x, n_dims):
-    "merge the last n_dims to a dimension"
     s = x.size()
     assert n_dims > 1 and n_dims < len(s)
     return x.view(*s[:-n_dims], -1)

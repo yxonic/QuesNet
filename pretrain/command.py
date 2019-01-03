@@ -14,54 +14,60 @@ from statistics import mean
 from torchtext import data
 from tensorboardX import SummaryWriter
 
-from .dataloader import DataLoader
-from .util import critical
+from . import dataloader
+from .util import critical, device
 
 
-class Train(fret.Command):
-    def __init__(self, parser):
-        parser.add_argument('-epochs', '-N', type=int, default=10,
-                            help='number of epochs to train')
-        parser.add_argument('--resume', '-r', action='store_true',
-                            help='resume training')
-        parser.add_argument('-batch_size', '-bs', type=int, default=16,
-                            help='batch size')
-        parser.add_argument('-log_every', type=int, default=16,
-                            help='write stats every # samples')
-        parser.add_argument('-save_every', type=int, default=-1,
-                            help='save model every # batches')
-
-    def run(self, ws, args):
-        return train(ws, args)
+@fret.command
+def prep(_):
+    """Generate inputs for each task, filtering out some test data"""
+    pass
 
 
-def train(ws, args):
+@fret.command
+def pretrain(ws):
+    """Pretrain feature extraction model"""
+    pass
+
+
+@fret.command
+def eval(ws):
+    """Use feature extraction model for each evaluation task"""
+    pass
+
+
+@fret.command
+def train(ws, epochs=10, resume=False, batch_size=16,
+          log_every=16, save_every=-1):
     logger = ws.logger('train')
 
     logger.info('Training...')
 
     model = ws.build_module()
+    model.to(device)
 
-    logger.info('[%s] model: %s, args: %s', ws, model, args)
+    logger.info('[%s] model: %s, args: %s', ws, model, train.args)
 
-    loader = DataLoader.load_state_dict(
+    loader = dataloader.DataLoader.load_state_dict(
         torch.load(model.config.vocab.replace('vocab', 'loader'),
                    pickle_module=dill))
 
     train_iter, valid_iter = \
         data.BucketIterator.splits(datasets=loader.splits[:-1],
-                                   batch_size=args.batch_size,
+                                   batch_size=batch_size,
                                    sort_key=lambda x: len(x.content),
-                                   sort_within_batch=True)
+                                   sort_within_batch=True,
+                                   device=device)
     epoch_size = len(train_iter)
 
     debug = logger.level == logging.DEBUG
     optim = torch.optim.Adam(model.parameters())
 
     state_path = ws.checkpoint_path / 'state.int.pt'
-    if args.resume and state_path.exists():
+    if resume and state_path.exists():
         cp_path = ws.checkpoint_path / 'model.int.pt'
-        model.load_state_dict(torch.load(str(cp_path)))
+        model.load_state_dict(torch.load(str(cp_path),
+                                         map_location=lambda s, _: s))
 
         state = torch.load(str(state_path))
         train_iter.load_state_dict(state['train_iter_state'])
@@ -72,7 +78,7 @@ def train(ws, args):
         n_samples = state['n_samples']
         initial = train_iter._iterations_this_epoch
     else:
-        if args.resume:
+        if resume:
             logger.warning('nothing to resume, starting from scratch')
         elif state_path.exists():
             print('has previous training state, overwrite? (y/N) ', end='')
@@ -88,19 +94,20 @@ def train(ws, args):
         start_epoch = 0
         initial = 0
 
+    model.train()
     writer = SummaryWriter(str(current_run))
 
-    for epoch in range(start_epoch, args.epochs):
+    for epoch in range(start_epoch, epochs):
         epoch_iter = iter(tqdm(islice(train_iter, epoch_size - initial),
                                total=epoch_size,
                                initial=initial,
                                desc=f'Epoch {epoch+1:3d}: ',
-                               unit='bz', disable=debug))
+                               unit='bz',
+                               smoothing=0.1, disable=debug))
         initial = 0
 
         try:
             # training
-            model.train()
             for batch in critical(epoch_iter):
                 # critical section on one batch
 
@@ -109,19 +116,19 @@ def train(ws, args):
 
                 # backprop on one batch
                 optim.zero_grad()
-                loss = model.loss(batch.content)
+                loss = model.pretrain_loss(batch.content)
                 loss.backward()
                 optim.step()
 
                 # log loss
                 loss_avg.append(loss.item())
-                if args.log_every == len(loss_avg):
+                if log_every == len(loss_avg):
                     writer.add_scalar('train/loss', mean(loss_avg),
                                       n_samples)
                     loss_avg = []
 
                 # save model
-                if args.save_every > 0 and i % args.save_every == 0:
+                if save_every > 0 and i % save_every == 0:
                     cp_path = ws / f'model.{epoch}.{i}.pt'
                     torch.save(model.state_dict(), str(cp_path))
 
@@ -169,52 +176,40 @@ def test(ws, snapshots):
     logger.info('[%s] model: %s', ws, model)
 
 
-class Prep(fret.Command):
-    def __init__(self, parser):
-        parser.add_argument('-input', '-i', help='raw input file',
-                            default='data/questions.head.tsv')
-        parser.add_argument('-input_type', '-t', default='char',
-                            choices=['char', 'word', 'both'],
-                            help='input type')
-        parser.add_argument('-split_ratio', '-s', default=[0.8, 0.2, 0.2],
-                            nargs='+', type=float,
-                            help='ratio of train/valid/test dataset')
-        parser.add_argument('-split_rand_seed', type=int,
-                            help='random state for splitting')
-        parser.add_argument('-max_len', type=int, default=400,
-                            help='maximum length')
-        parser.add_argument('-max_size', type=int,
-                            help='maximum vocab size')
-        parser.add_argument('-min_freq', type=int, default=1,
-                            help='minimum frequency of word')
-        parser.add_argument('-output_dir', '-o', required=True,
-                            help='output directory')
+@fret.command
+def prep_(_, input_file,
+         input_type=('char', 'input type', ['char', 'word', 'both']),
+         split_ratio=([0.8, 0.2, 0.2], 'train/valid/test ratio'),
+         split_rand_seed=fret.arg(help='random state for splitting', type=int),
+         max_len=(400, 'maximum length'),
+         max_size=fret.arg(help='random state for splitting', type=int),
+         min_freq=(1, 'minimum frequency of word'),
+         output_dir=fret.arg(required=True, help='output directory')):
 
-    def run(self, ws, args):
-        return prep(ws, args)
-
-
-def prep(ws, args):
-    if args.split_ratio is not None and len(args.split_ratio) != 3:
+    if split_ratio is not None and len(split_ratio) != 3:
         logging.error("split_ratio must be of length 3 (train/valid/test)")
         sys.exit(1)
 
-    loader = DataLoader(raw_file=args.input,
-                        input_type=args.input_type,
-                        split_ratio=args.split_ratio,
-                        split_rand_seed=args.split_rand_seed,
-                        max_len=args.max_len)
-    print('In [{}]:'.format(args.output_dir))
+    loader = dataloader.DataLoader(raw_file=input_file,
+                                   input_type=input_type,
+                                   split_ratio=split_ratio,
+                                   split_rand_seed=split_rand_seed,
+                                   max_len=max_len)
+    print('In [{}]:'.format(output_dir))
     print('  #train: {}\n  #valid: {}\n  #test: {}'
           .format(*(len(d) for d in loader.splits)))
-    loader.build_vocab(max_size=args.max_size, min_freq=args.min_freq)
+    loader.build_vocab(max_size=max_size, min_freq=min_freq)
     vocab = loader.text_field.vocab
     print('  vocab size: {}'.format(len(vocab.stoi)))
 
     try:
-        os.makedirs(args.output_dir)
+        os.makedirs(output_dir)
     except OSError:
         pass
-    torch.save(loader.state_dict(), os.path.join(args.output_dir, 'loader.pt'),
+    torch.save(loader.state_dict(), os.path.join(output_dir, 'loader.pt'),
                pickle_module=dill)
-    torch.save(vocab, os.path.join(args.output_dir, 'vocab.pt'))
+    torch.save(vocab, os.path.join(output_dir, 'vocab.pt'))
+
+
+if __name__ == '__main__':
+    test(fret.workspace('ws/test'))
