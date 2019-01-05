@@ -5,11 +5,6 @@ import torch
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
-def t(*args, **kwargs):
-    kwargs['device'] = device
-    return torch.tensor(*args, **kwargs)
-
-
 sigint_handler = signal.getsignal(signal.SIGINT)
 
 
@@ -31,3 +26,20 @@ def critical(f):
                 sigint_handler(*signal_received)
         except StopIteration:
             break
+
+
+def stateful(states):
+
+    def wrapper(cls):
+        def state_dict(self):
+            return {s: getattr(self, s) for s in states}
+
+        def load_state_dict(self, state):
+            for s in states:
+                setattr(self, s, state[s])
+
+        cls.state_dict = state_dict
+        cls.load_state_dict = load_state_dict
+        return cls
+
+    return wrapper

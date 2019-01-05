@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
 
 
+@fret.configurable
 class Trainer:
     def __init__(self, feature_extractor):
         pass
@@ -33,6 +34,9 @@ class Trainer:
 
 @fret.configurable
 class _FeatureExtractor:
+    def __init__(self, feat_size=512):
+        pass
+
     def make_batch(self, data):
         """Make batch from input data (python data / np arrays -> tensors)"""
         pass

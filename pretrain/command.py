@@ -212,4 +212,4 @@ def prep_(_, input_file,
 
 
 if __name__ == '__main__':
-    test(fret.workspace('ws/test'))
+    prep(fret.workspace('ws/test'))

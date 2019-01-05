@@ -2,11 +2,18 @@
 level vectors."""
 
 import csv
+import math
+import queue
+import random
+import threading
 
 import torchtext as tt
+from tqdm import tqdm
+
+from .util import stateful
 
 
-def load_questions(filename):
+def load_questions(text, ):
     """Read question file as data list. Same behavior on same file."""
     pass
 
@@ -16,9 +23,56 @@ def load_labels(filename, type):
     pass
 
 
-class DataIter:
+@stateful(['batch_size', 'index', 'pos'])
+class PrefetchIter:
     """Iterator on data and labels, with states for save and restore."""
-    pass
+
+    def __init__(self, data, *label, length=None, batch_size=1):
+        self.data = data
+        self.label = label
+        self.batch_size = batch_size
+        self.queue = queue.Queue(maxsize=8)
+        self.length = length if length is not None else len(data)
+
+        assert all(self.length == len(lab) for lab in label), \
+            'data and label must have same lengths'
+
+        self.index = list(range(len(self)))
+        random.shuffle(self.index)
+        self.thread = None
+        self.pos = 0
+
+    def __len__(self):
+        return math.ceil(self.length / self.batch_size)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.thread is None:
+            self.thread = threading.Thread(target=self.produce, daemon=True)
+            self.thread.start()
+
+        if self.pos >= len(self.index):
+            raise StopIteration
+
+        self.pos += 1
+        return self.queue.get()
+
+    def produce(self):
+        for i in range(self.pos, len(self.index)):
+            index = self.index[self.pos]
+
+            bs = self.batch_size
+
+            if callable(self.data):
+                data_batch = self.data(index * bs, (index + 1) * bs)
+            else:
+                data_batch = self.data[index * bs:(index + 1) * bs]
+
+            label_batch = [label[index * bs:(index + 1) * bs]
+                           for label in self.label]
+            self.queue.put([data_batch] + label_batch)
 
 
 def _cut(x):
@@ -190,16 +244,12 @@ class DataLoader:
 
 
 if __name__ == '__main__':
-    data = DataLoader(raw_file='data/questions.head.tsv',
-                      input_type='both')
-
-    train_iter, valid_iter, test_iter = \
-        tt.data.BucketIterator.splits(data.splits, batch_sizes=[8, 32, 32],
-                                      sort_key=lambda x: len(x.content[0]),
-                                      sort_within_batch=True)
-
-    b = next(iter(train_iter))
-    print('lens:', [x.item() for x in b.content[0][1]])
-
-    cv = data.char_field.vocab
-    print(' '.join(cv.itos[x] for x in b.content[0][0].t()[0]))
+    _data = list(range(100))
+    it = PrefetchIter(_data, batch_size=2)
+    for i, _ in enumerate(it):
+        if i > 12:
+            break
+    from .util import critical
+    import time
+    for _ in critical(tqdm(it, initial=it.pos, dynamic_ncols=True)):
+        time.sleep(0.1)
