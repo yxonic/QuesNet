@@ -211,7 +211,7 @@ class Embeddings(nn.Module):
     def forward(self, x, seg):
         seq_len = x.size(1)
         pos = torch.arange(seq_len, dtype=torch.long, device=x.device)
-        pos = pos.unsqueeze(0).expand_as(x) # (S,) -> (B, S)
+        pos = pos.unsqueeze(0).expand_as(x)  # (S,) -> (B, S)
 
         e = self.tok_embed(x) + self.pos_embed(pos) + self.seg_embed(seg)
         return self.drop(self.norm(e))
@@ -235,7 +235,7 @@ class MultiHeadedSelfAttention(nn.Module):
         mask : (B(batch_size) x S(seq_len))
         * split D(dim) into (H(n_heads), W(width of head)) ; D = H * W
         """
-        # (B, S, D) -proj-> (B, S, D) -split-> (B, S, H, W) -trans-> (B, H, S, W)
+        # (B, S, D)-proj->(B, S, D)-split->(B, S, H, W)-trans->(B, H, S, W)
         q, k, v = self.proj_q(x), self.proj_k(x), self.proj_v(x)
         q, k, v = (split_last(x, (self.n_heads, -1)).transpose(1, 2)
                    for x in [q, k, v])
@@ -260,7 +260,6 @@ class PositionWiseFeedForward(nn.Module):
         super().__init__()
         self.fc1 = nn.Linear(cfg.dim, cfg.dim_ff)
         self.fc2 = nn.Linear(cfg.dim_ff, cfg.dim)
-        #self.activ = lambda x: activ_fn(cfg.activ_fn, x)
 
     def forward(self, x):
         # (B, S, D) -> (B, S, D_ff) -> (B, S, D)

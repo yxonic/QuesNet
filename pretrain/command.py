@@ -178,13 +178,14 @@ def test(ws, snapshots):
 
 @fret.command
 def prep_(_, input_file,
-         input_type=('char', 'input type', ['char', 'word', 'both']),
-         split_ratio=([0.8, 0.2, 0.2], 'train/valid/test ratio'),
-         split_rand_seed=fret.arg(help='random state for splitting', type=int),
-         max_len=(400, 'maximum length'),
-         max_size=fret.arg(help='random state for splitting', type=int),
-         min_freq=(1, 'minimum frequency of word'),
-         output_dir=fret.arg(required=True, help='output directory')):
+          input_type=('char', 'input type', ['char', 'word', 'both']),
+          split_ratio=([0.8, 0.2, 0.2], 'train/valid/test ratio'),
+          split_rand_seed=fret.arg(help='random state for splitting',
+                                   type=int),
+          max_len=(400, 'maximum length'),
+          max_size=fret.arg(help='random state for splitting', type=int),
+          min_freq=(1, 'minimum frequency of word'),
+          output_dir=fret.arg(required=True, help='output directory')):
 
     if split_ratio is not None and len(split_ratio) != 3:
         logging.error("split_ratio must be of length 3 (train/valid/test)")
