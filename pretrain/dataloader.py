@@ -2,25 +2,71 @@
 level vectors."""
 
 import csv
+import linecache
 import math
+import os
 import queue
 import random
+import subprocess
 import threading
+from collections import namedtuple
 
 import torchtext as tt
-from tqdm import tqdm
+from PIL import Image
+from torchvision.transforms import ToTensor
 
 from .util import stateful
 
-
-def load_questions(ques_file, img_dir):
-    """Read question file as data list. Same behavior on same file."""
-    pass
+Question = namedtuple('Question',
+                      ['id', 'content', 'answer', 'false_options'])
 
 
-def load_labels(filename, type):
-    """Read label file as label list. Same behavior on same file."""
-    pass
+class QuestionLoader:
+    def __init__(self, ques_file, word_file, img_dir, *label_file):
+        """Read question file as data list. Same behavior on same file."""
+        self.ques_file = ques_file
+        output = subprocess.check_output(('wc -l ' + ques_file).split())
+        self.length = int(output.split()[0]) - 2
+        self.img_dir = img_dir
+        self.label_file = label_file
+        self.itos = open(word_file).read().strip().split('\n')
+        self.stoi = {s: i for i, s in enumerate(self.itos)}
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, item):
+        low = item.start
+        high = item.stop
+        qs = []
+        for i in range(low, high):
+            line = linecache.getline(self.ques_file, i + 2)
+            fields = line.split('\t')
+            qid, content, answer = fields[0], fields[1], fields[2]
+            false_options = fields[4]
+            content = content.split()
+            for i in range(len(content)):
+                if content[i].startswith('{img:'):
+                    try:
+                        im = Image.open(os.path.join(self.img_dir,
+                                                     content[i][5:-1]))
+                        content[i] = ToTensor()(im)
+                    except Exception:
+                        content[i] = self.stoi['{img}']
+                else:
+                    content[i] = self.stoi.get(content[i]) or 0
+
+            answer = [self.stoi.get(a) or 0 for a in answer.split()]
+
+            if len(false_options):
+                false_options = [[self.stoi.get(x) or 0 for x in o.split()]
+                                 for o in false_options.split('::')]
+
+            else:
+                false_options = None
+
+            qs.append(Question(qid, content, answer, false_options))
+        return qs
 
 
 @stateful(['batch_size', 'index', 'pos'])
@@ -56,26 +102,34 @@ class PrefetchIter:
         if self.pos >= len(self.index):
             raise StopIteration
 
-        self.pos += 1
-        return self.queue.get()
+        item = self.queue.get()
+        if isinstance(item, Exception):
+            raise item
+        else:
+            self.pos += 1
+            return item
 
     def produce(self):
         for i in range(self.pos, len(self.index)):
-            index = self.index[i]
+            try:
+                index = self.index[i]
 
-            bs = self.batch_size
+                bs = self.batch_size
 
-            if callable(self.data):
-                data_batch = self.data(index * bs, (index + 1) * bs)
-            else:
-                data_batch = self.data[index * bs:(index + 1) * bs]
+                if callable(self.data):
+                    data_batch = self.data(index * bs, (index + 1) * bs)
+                else:
+                    data_batch = self.data[index * bs:(index + 1) * bs]
 
-            label_batch = [label[index * bs:(index + 1) * bs]
-                           for label in self.label]
-            if label_batch:
-                self.queue.put([data_batch] + label_batch)
-            else:
-                self.queue.put(data_batch)
+                label_batch = [label[index * bs:(index + 1) * bs]
+                               for label in self.label]
+                if label_batch:
+                    self.queue.put([data_batch] + label_batch)
+                else:
+                    self.queue.put(data_batch)
+            except Exception as e:
+                self.queue.put(e)
+                return
 
 
 def _cut(x):
@@ -247,12 +301,10 @@ class DataLoader:
 
 
 if __name__ == '__main__':
-    _data = list(range(100))
-    it = PrefetchIter(_data, batch_size=2)
-    for i, _ in enumerate(it):
-        if i > 12:
-            break
-    from .util import critical
-    import time
-    for _ in critical(tqdm(it, initial=it.pos, dynamic_ncols=True)):
-        time.sleep(0.1)
+    questions = QuestionLoader('../../data/question/ques.txt',
+                               '../../data/question/words.txt',
+                               '../../data/question/imgs')
+    cnt = 0
+    for qs in PrefetchIter(questions, batch_size=16):
+        cnt += len(qs)
+    print(cnt, len(questions))
