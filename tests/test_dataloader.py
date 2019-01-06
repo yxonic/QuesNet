@@ -15,3 +15,8 @@ def test_dataiter():
 
     assert it.batch_size == it2.batch_size
     assert next(it) == next(it2)
+
+    it = PrefetchIter(_data, batch_size=1)
+
+    for i, d in enumerate(it):
+        assert d[0] == it.index[i]

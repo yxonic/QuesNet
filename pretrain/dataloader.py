@@ -13,7 +13,7 @@ from tqdm import tqdm
 from .util import stateful
 
 
-def load_questions(text, ):
+def load_questions(ques_file, img_dir):
     """Read question file as data list. Same behavior on same file."""
     pass
 
@@ -61,7 +61,7 @@ class PrefetchIter:
 
     def produce(self):
         for i in range(self.pos, len(self.index)):
-            index = self.index[self.pos]
+            index = self.index[i]
 
             bs = self.batch_size
 
@@ -72,7 +72,10 @@ class PrefetchIter:
 
             label_batch = [label[index * bs:(index + 1) * bs]
                            for label in self.label]
-            self.queue.put([data_batch] + label_batch)
+            if label_batch:
+                self.queue.put([data_batch] + label_batch)
+            else:
+                self.queue.put(data_batch)
 
 
 def _cut(x):
