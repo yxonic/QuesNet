@@ -1,4 +1,4 @@
-from pretrain.dataloader import PrefetchIter
+from pretrain.util import PrefetchIter
 
 
 def test_dataiter():

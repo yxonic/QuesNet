@@ -1,22 +1,52 @@
 import math
+from functools import partial
+
 import fret
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
+from torch.nn.utils.rnn import PackedSequence
+from torchvision.transforms.functional import to_grayscale, to_tensor
+from tqdm import tqdm
+
+from .dataloader import QuestionLoader
+from .util import PrefetchIter, SeqBatch, critical, device
 
 
 @fret.configurable
 class Trainer:
     def __init__(self, feature_extractor):
-        pass
+        self.ques = QuestionLoader('data/ques.txt', 'data/words.txt',
+                                   'data/imgs')
 
-    def pretrain(self):
-        pass
+        self.feature_extractor = \
+            feature_extractor(_stoi=self.ques.stoi).to(device)
 
-    def eval(self):
+        self.pretrain_pipeline = partial(self.feature_extractor.make_batch,
+                                         pretrain=True)
+        self.eval_pipeline = self.feature_extractor.make_batch
+
+    def pretrain(self, args):
+        self.feature_extractor.train()
+        self.ques.pipeline = self.pretrain_pipeline
+
+        optim = torch.optim.Adam(self.feature_extractor.parameters())
+
+        for epoch in range(args.n_epochs):
+            train_iter = PrefetchIter(self.ques, batch_size=args.batch_size)
+
+            try:
+                for i, batch in critical(enumerate(tqdm(train_iter))):
+                    loss = self.feature_extractor.pretrain_loss(batch)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+            except KeyboardInterrupt:
+                raise
+
+    def eval(self, args):
         pass
 
     def save_state(self):
@@ -33,24 +63,23 @@ class Trainer:
 
 
 @fret.configurable
-class _FeatureExtractor:
+class FeatureExtractor(nn.Module):
     def __init__(self, feat_size=512):
-        pass
+        super(FeatureExtractor, self).__init__()
+        self.feat_size = feat_size
 
-    def make_batch(self, data):
+    def make_batch(self, data, pretrain=False):
         """Make batch from input data (python data / np arrays -> tensors)"""
-        pass
-
-    def forward(self, batch):
-        """Returns a sequence of features on a batch of data"""
         pass
 
     def pretrain_loss(self, batch):
         """Returns pretraining loss on a batch of data"""
         pass
 
+    def forward(self, *input):
+        pass
 
-@fret.configurable
+
 class _Predictor:
     def __init__(self, out_dim):
         pass
@@ -59,20 +88,29 @@ class _Predictor:
         pass
 
 
+class _ScorePrediction:
+    def __init__(self):
+        pass
+
+    def forward(self):
+        pass
+
+
 @fret.configurable
-class RNN(nn.Module):
+class RNN(FeatureExtractor):
     """Sequence-to-sequence feature extractor based on RNN. Supports different
     input forms and different RNN types (LSTM/GRU), """
 
-    def __init__(self,
-                 vocab=(None, 'vocab file'),
-                 emb_size=(200, 'size of embedding vectors'),
+    def __init__(self, _stoi,
+                 emb_size=(256, 'size of embedding vectors'),
                  rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
-                 rnn_size=(500, 'size of rnn hidden states'),
-                 layers=(1, 'number of layers')):
-        super(RNN, self).__init__()
-        vocab = torch.load(vocab)
-        vocab_size = len(vocab.stoi)
+                 layers=(1, 'number of layers'), **kwargs):
+        super(RNN, self).__init__(**kwargs)
+
+        rnn_size = self.feat_size
+
+        self.stoi = _stoi
+        vocab_size = len(_stoi)
 
         self.embedding = nn.Embedding(vocab_size, emb_size)
         if rnn == 'GRU':
@@ -84,37 +122,158 @@ class RNN(nn.Module):
             self.c0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
         self.output = nn.Linear(rnn_size, vocab_size)
 
-    def forward(self, batch: PackedSequence):
-        emb = self.embedding(batch.data)
-        h = self.init_h(batch.batch_sizes[0])
-        y, h = self.rnn(PackedSequence(emb, batch.batch_sizes), h)
-        return y
+    def make_batch(self, data, pretrain=False):
+        qs = [[x if isinstance(x, int) else self.stoi.get('{img}') or 0
+               for x in q.content] for q in data]
+        if pretrain:
+            inputs = [[0] + q for q in qs]
+            outputs = [q + [0] for q in qs]
+            return SeqBatch(inputs, device=device), \
+                SeqBatch(outputs, device=device)
+        return SeqBatch(qs, device=device)
+
+    def forward(self, batch: SeqBatch):
+        packed = batch.packed()
+        emb = self.embedding(packed.data)
+        h = self.init_h(packed.batch_sizes[0])
+        y, h = self.rnn(PackedSequence(emb, packed.batch_sizes), h)
+        if self.config['rnn'] == 'GRU':
+            return y, batch.invert(h, 1)
+        else:
+            return y, batch.invert(h[0], 1)
 
     def pretrain_loss(self, batch):
-        x, lens = batch
-        lens -= 1
-        input = pack_padded_sequence(x[:-1, :], lens)
-        y_true = pack_padded_sequence(x[1:, :], lens)
-
+        input, output = batch
+        y_true = output.packed().data
         y = self(input)
-        y_pred = self.output(y.data)
+        y_pred = self.output(y[0].data)
         loss = F.cross_entropy(y_pred, y_true.data)
         return loss
-
-    def classification(self, n_classes):
-        clf_head = nn.Linear(self.config.rnn_size, n_classes)
-        return nn.Sequential(self, clf_head)
-
-    def multi_labeling(self, n_labels):
-        pass
-
-    def value_prediction(self, dim=1):
-        pass
 
     def init_h(self, batch_size):
         size = list(self.h0.size())
         size[1] = batch_size
-        if self.config.rnn == 'GRU':
+        if self.config['rnn'] == 'GRU':
+            return self.h0.expand(size)
+        else:
+            return self.h0.expand(size), self.c0.expand(size)
+
+
+@fret.configurable
+class HRNN(FeatureExtractor):
+    """Sequence-to-sequence feature extractor based on RNN. Supports different
+    input forms and different RNN types (LSTM/GRU), """
+    def __init__(self, _stoi,
+                 emb_size=(256, 'size of embedding vectors'),
+                 rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
+                 layers=(1, 'number of layers'), **kwargs):
+        super(HRNN, self).__init__(**kwargs)
+
+        feat_size = self.feat_size
+
+        self.stoi = _stoi
+        vocab_size = len(_stoi)
+
+        self.we = nn.Embedding(vocab_size, emb_size)
+        self.ie = ImageAE(emb_size)
+        self.me = MetaAE(emb_size)
+
+        if rnn == 'GRU':
+            self.rnn = nn.GRU(emb_size, feat_size, layers)
+            self.h0 = nn.Parameter(torch.rand(layers, 1, feat_size))
+        else:
+            self.rnn = nn.LSTM(emb_size, feat_size, layers)
+            self.h0 = nn.Parameter(torch.rand(layers, 1, feat_size))
+            self.c0 = nn.Parameter(torch.rand(layers, 1, feat_size))
+
+        self.woutput = nn.Linear(feat_size, vocab_size)
+        self.ioutput = nn.Linear(feat_size, emb_size)
+        self.moutput = nn.Linear(feat_size, emb_size)
+
+    def make_batch(self, data, pretrain=False):
+        """Returns embeddings"""
+        embs = []
+        gt = []
+        for q in data:
+            _embs = [self.we(torch.tensor([0], device=device))]
+            _gt = []
+
+            for w in q.content:
+                if isinstance(w, int):
+                    _embs.append(self.we(torch.tensor([w], device=device)))
+                    _gt.append(torch.tensor([w], device=device))
+                else:
+                    _embs.append(self.ie.enc(to_tensor(w).to(device)))
+                    _gt.append(to_tensor(w).to(device))
+            _gt.append(torch.tensor([0], device=device))
+
+            embs.append(torch.cat(_embs, dim=0))
+            gt.append(_gt)
+
+        embs = SeqBatch(embs)
+
+        length = sum(embs.lens)
+        words = []
+        ims = []
+        metas = []
+        wmask = torch.zeros(length, device=device).byte()
+        imask = torch.zeros(length, device=device).byte()
+        mmask = torch.zeros(length, device=device).byte()
+        for i, _gt in enumerate(gt):
+            for j, v in enumerate(_gt):
+                ind = embs.index((j, i))
+                if v.size() == torch.Size([1]):  # word
+                    words.append(v)
+                    wmask[ind] = 1
+                elif len(v.size()) == 1:
+                    metas.append(v.unsqueeze(0))
+                    mmask[ind] = 1
+                else:
+                    ims.append(v.unsqueeze(0))
+                    imask[ind] = 1
+        words = torch.cat(words, dim=0) if words else None
+        ims = torch.cat(ims, dim=0) if ims else None
+        metas = torch.cat(metas, dim=0) if metas else None
+
+        if pretrain:
+            return embs, words, ims, metas, wmask, imask, mmask
+        else:
+            return SeqBatch(embs)
+
+    def forward(self, batch: SeqBatch):
+        packed = batch.packed()
+        h = self.init_h(packed.batch_sizes[0])
+        y, h = self.rnn(packed, h)
+        if self.config['rnn'] == 'GRU':
+            return y, batch.invert(h, 1)
+        else:
+            return y, batch.invert(h[0], 1)
+
+    def pretrain_loss(self, batch):
+        input, words, ims, metas, wmask, imask, mmask = batch
+        y = self(input)
+        y_pred = y[0].data
+
+        wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
+            .view(-1, self.feat_size)
+        ifea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
+            .view(-1, self.feat_size)
+        mfea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
+            .view(-1, self.feat_size)
+
+        out = self.woutput(wfea)
+        wloss = F.cross_entropy(out, words)
+
+        out = self.ioutput(ifea)
+        iloss = F.mse_loss(self.ie.dec(out), ims)
+
+        loss = wloss + iloss
+        return loss
+
+    def init_h(self, batch_size):
+        size = list(self.h0.size())
+        size[1] = batch_size
+        if self.config['rnn'] == 'GRU':
             return self.h0.expand(size)
         else:
             return self.h0.expand(size), self.c0.expand(size)
@@ -295,5 +454,21 @@ def split_last(x, shape):
 
 def merge_last(x, n_dims):
     s = x.size()
-    assert n_dims > 1 and n_dims < len(s)
+    assert 1 < n_dims < len(s)
     return x.view(*s[:-n_dims], -1)
+
+
+class ImageAE:
+    def __init__(self, emb_size):
+        self.emb_size = emb_size
+
+    def enc(self, im):
+        return torch.zeros(im.size(0), self.emb_size)
+
+    def dec(self, fea):
+        return torch.zeros(fea.size(0), 1, 56, 56)
+
+
+class MetaAE:
+    def __init__(self, emb_size):
+        pass

@@ -2,45 +2,36 @@
 level vectors."""
 
 import csv
-import linecache
-import math
 import os
-import queue
-import random
-import subprocess
-import threading
 from collections import namedtuple
 
 import torchtext as tt
 from PIL import Image
-from torchvision.transforms import ToTensor
+from torchvision.transforms.functional import to_tensor, to_grayscale
 
-from .util import stateful
+from .util import lines
 
 Question = namedtuple('Question',
                       ['id', 'content', 'answer', 'false_options'])
 
 
 class QuestionLoader:
-    def __init__(self, ques_file, word_file, img_dir, *label_file):
+    def __init__(self, ques_file, word_file, img_dir,
+                 *label_file, pipeline=None):
         """Read question file as data list. Same behavior on same file."""
-        self.ques_file = ques_file
-        output = subprocess.check_output(('wc -l ' + ques_file).split())
-        self.length = int(output.split()[0]) - 2
+        self.ques = lines(ques_file, skip=1)
         self.img_dir = img_dir
         self.label_file = label_file
-        self.itos = open(word_file).read().strip().split('\n')
+        self.itos = lines(word_file)
         self.stoi = {s: i for i, s in enumerate(self.itos)}
+        self.pipeline = pipeline
 
     def __len__(self):
-        return self.length
+        return len(self.ques)
 
     def __getitem__(self, item):
-        low = item.start
-        high = item.stop
         qs = []
-        for i in range(low, high):
-            line = linecache.getline(self.ques_file, i + 2)
+        for line in self.ques[item]:
             fields = line.split('\t')
             qid, content, answer = fields[0], fields[1], fields[2]
             false_options = fields[4]
@@ -50,7 +41,8 @@ class QuestionLoader:
                     try:
                         im = Image.open(os.path.join(self.img_dir,
                                                      content[i][5:-1]))
-                        content[i] = ToTensor()(im)
+                        im = im.resize((56, 56))
+                        content[i] = to_grayscale(im)
                     except Exception:
                         content[i] = self.stoi['{img}']
                 else:
@@ -66,70 +58,11 @@ class QuestionLoader:
                 false_options = None
 
             qs.append(Question(qid, content, answer, false_options))
-        return qs
 
-
-@stateful(['batch_size', 'index', 'pos'])
-class PrefetchIter:
-    """Iterator on data and labels, with states for save and restore."""
-
-    def __init__(self, data, *label, length=None, batch_size=1):
-        self.data = data
-        self.label = label
-        self.batch_size = batch_size
-        self.queue = queue.Queue(maxsize=8)
-        self.length = length if length is not None else len(data)
-
-        assert all(self.length == len(lab) for lab in label), \
-            'data and label must have same lengths'
-
-        self.index = list(range(len(self)))
-        random.shuffle(self.index)
-        self.thread = None
-        self.pos = 0
-
-    def __len__(self):
-        return math.ceil(self.length / self.batch_size)
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self.thread is None:
-            self.thread = threading.Thread(target=self.produce, daemon=True)
-            self.thread.start()
-
-        if self.pos >= len(self.index):
-            raise StopIteration
-
-        item = self.queue.get()
-        if isinstance(item, Exception):
-            raise item
+        if callable(self.pipeline):
+            return self.pipeline(qs)
         else:
-            self.pos += 1
-            return item
-
-    def produce(self):
-        for i in range(self.pos, len(self.index)):
-            try:
-                index = self.index[i]
-
-                bs = self.batch_size
-
-                if callable(self.data):
-                    data_batch = self.data(index * bs, (index + 1) * bs)
-                else:
-                    data_batch = self.data[index * bs:(index + 1) * bs]
-
-                label_batch = [label[index * bs:(index + 1) * bs]
-                               for label in self.label]
-                if label_batch:
-                    self.queue.put([data_batch] + label_batch)
-                else:
-                    self.queue.put(data_batch)
-            except Exception as e:
-                self.queue.put(e)
-                return
+            return qs
 
 
 def _cut(x):
@@ -298,13 +231,3 @@ class DataLoader:
         )
         rv.splits = [train_set, valid_set, test_set]
         return rv
-
-
-if __name__ == '__main__':
-    questions = QuestionLoader('../../data/question/ques.txt',
-                               '../../data/question/words.txt',
-                               '../../data/question/imgs')
-    cnt = 0
-    for qs in PrefetchIter(questions, batch_size=16):
-        cnt += len(qs)
-    print(cnt, len(questions))

@@ -15,6 +15,7 @@ from torchtext import data
 from tensorboardX import SummaryWriter
 
 from . import dataloader
+from .module import Trainer
 from .util import critical, device
 
 
@@ -25,15 +26,19 @@ def prep(_):
 
 
 @fret.command
-def pretrain(ws):
+def pretrain(ws, n_epochs=5, batch_size=16):
     """Pretrain feature extraction model"""
-    pass
+    logger = ws.logger('pretrain')
+    trainer: Trainer = ws.build_module()
+    logger.info('[%s] model: %s, args: %s', ws, trainer, pretrain.args)
+    trainer.pretrain(pretrain.args)
 
 
 @fret.command
 def eval(ws):
     """Use feature extraction model for each evaluation task"""
-    pass
+    trainer: Trainer = ws.build_module()
+    trainer.eval(eval.args)
 
 
 @fret.command
