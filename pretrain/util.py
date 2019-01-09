@@ -2,7 +2,6 @@ import io
 import linecache
 import logging
 import math
-import os
 import queue
 import random
 import signal
@@ -11,9 +10,6 @@ import threading
 
 import torch
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
-
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
 
 sigint_handler = signal.getsignal(signal.SIGINT)
 
@@ -50,9 +46,10 @@ def critical(f):
             break
 
 
-def stateful(states):
+def stateful(*states):
 
     def wrapper(cls):
+        orig_state_dict = orig_load_state_dict = None
         if hasattr(cls, 'state_dict'):
             orig_state_dict = cls.state_dict
         if hasattr(cls, 'load_state_dict'):
@@ -60,13 +57,15 @@ def stateful(states):
 
         def state_dict(self):
             state = {s: getattr(self, s) for s in states}
-            state.update(orig_state_dict(self))
+            if orig_state_dict is not None:
+                state.update(orig_state_dict(self))
             return state
 
         def load_state_dict(self, state):
             for s in states:
                 setattr(self, s, state[s])
-            orig_load_state_dict(self, state)
+            if orig_load_state_dict is not None:
+                orig_load_state_dict(self, state)
 
         cls.state_dict = state_dict
         cls.load_state_dict = load_state_dict
@@ -77,14 +76,14 @@ def stateful(states):
 
 # noinspection PyPep8Naming
 class lines:
-    def __init__(self, filename, skip=0, no_newline=True):
+    def __init__(self, filename, skip=0, preserve_newline=False):
         self.filename = filename
         with open(filename):
             pass
         output = subprocess.check_output(('wc -l ' + filename).split())
         self.length = int(output.split()[0]) - skip
         self.skip = skip
-        self.no_newline = no_newline
+        self.preserve_newline = preserve_newline
 
     def __len__(self):
         return self.length
@@ -99,10 +98,10 @@ class lines:
             if item < self.length:
                 line = linecache.getline(self.filename,
                                          item % len(self) + d)
-                if self.no_newline:
-                    return line.strip('\r\n')
-                else:
+                if self.preserve_newline:
                     return line
+                else:
+                    return line.strip('\r\n')
 
         elif isinstance(item, slice):
             low = 0 if item.start is None else item.start
@@ -116,7 +115,7 @@ class lines:
             ls = []
             for i in range(low, high):
                 line = linecache.getline(self.filename, i + d)
-                if self.no_newline:
+                if self.preserve_newline:
                     line = line.strip('\r\n')
                 ls.append(line)
 
@@ -125,7 +124,7 @@ class lines:
         raise IndexError('index must be int or slice')
 
 
-@stateful(['batch_size', 'index', 'pos'])
+@stateful('batch_size', 'index', 'pos')
 class PrefetchIter:
     """Iterator on data and labels, with states for save and restore."""
 
@@ -250,13 +249,13 @@ class TableBuilder:
             m = max(row)
             if percentage:
                 f = '%%.%df\\%%%%' % decimal
-                data = [f % (x * 100) if x < m
-                        else '\\textbf{%s}' % f % (x * 100)
-                        for x in row]
+                data = [f % (v * 100) if v < m
+                        else '\\textbf{%s}' % f % (v * 100)
+                        for v in row]
             else:
                 f = '%%.%df' % decimal
-                data = [f % x if x < m else '\\textbf{%s}' % f % x
-                        for x in row]
+                data = [f % v if v < m else '\\textbf{%s}' % f % v
+                        for v in row]
             table.write('    ' + ' & '.join([self.rows[i]] + data) +
                         '\\\\\n')
 
@@ -268,5 +267,4 @@ class TableBuilder:
 
 if __name__ == '__main__':
     b = SeqBatch([[1, 2], [1, 2, 3, 4, 5], [1], [1, 2, 3], [1, 2, 3]])
-    x = b.packed().data
-    print(b.index((2, 3)), x[b.index((2, 3))])
+    print(b.index((2, 3)), b.packed().data[b.index((2, 3))])

@@ -57,7 +57,7 @@ class BertAdam(Optimizer):
             "Warmup %f - should be in 0.0 ~ 1.0 or -1 (no warm up)" % warmup
         assert 0.0 <= b1 < 1.0, "b1: %f - should be in 0.0 ~ 1.0" % b1
         assert 0.0 <= b2 < 1.0, "b2: %f - should be in 0.0 ~ 1.0" % b2
-        assert e > 0.0, "epsilon: %f - should be > 0.0" % (e)
+        assert e > 0.0, "epsilon: %f - should be > 0.0" % e
         defaults = dict(lr=lr, schedule=schedule, warmup=warmup,
                         t_total=t_total, b1=b1, b2=b2, e=e,
                         weight_decay_rate=weight_decay_rate,
@@ -157,7 +157,7 @@ class BertAdam(Optimizer):
         return loss
 
 
-def optim4GPU(cfg, model):
+def optim4gpu(cfg, model):
     """ optimizer for GPU training """
     param_optimizer = list(model.named_parameters())
     no_decay = ['bias', 'gamma', 'beta']

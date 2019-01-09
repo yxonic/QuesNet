@@ -1,9 +1,14 @@
 """Define commands."""
 import logging
 import os
+import random
+import shutil
+import subprocess
 import sys
 import datetime
 from itertools import islice
+from pathlib import Path
+
 from tqdm import tqdm
 
 import dill
@@ -16,21 +21,18 @@ from tensorboardX import SummaryWriter
 
 from . import dataloader
 from .module import Trainer
-from .util import critical, device
+from .util import critical
+from . import device
 
 
+# noinspection PyUnusedLocal
 @fret.command
-def prep(_):
-    """Generate inputs for each task, filtering out some test data"""
-    pass
-
-
-@fret.command
-def pretrain(ws, n_epochs=5, batch_size=16):
+def pretrain(ws, n_epochs=5, batch_size=16, resume=True):
     """Pretrain feature extraction model"""
     logger = ws.logger('pretrain')
     trainer: Trainer = ws.build_module()
-    logger.info('[%s] model: %s, args: %s', ws, trainer, pretrain.args)
+    logger.info('[%s] model: %s, args: %s', ws,
+                trainer.feature_extractor, pretrain.args)
     trainer.pretrain(pretrain.args)
 
 
@@ -42,7 +44,7 @@ def eval(ws):
 
 
 @fret.command
-def train(ws, epochs=10, resume=False, batch_size=16,
+def train(ws, epochs=10, resume=True, batch_size=16,
           log_every=16, save_every=-1):
     logger = ws.logger('train')
 
@@ -172,6 +174,7 @@ def _save_state(ws, current_run, model, optim, train_iter,
     }, str(state_path))
 
 
+# noinspection PyUnusedLocal
 @fret.command
 def test(ws, snapshots):
     """Test the model. See :class:`~app.run.Test` for ``args``."""
@@ -217,5 +220,6 @@ def prep_(_, input_file,
     torch.save(vocab, os.path.join(output_dir, 'vocab.pt'))
 
 
-if __name__ == '__main__':
-    prep(fret.workspace('ws/test'))
+@fret.command
+def tb(_):
+    subprocess.run('tensorboard --logdir ws', shell=True, check=True)

@@ -1,3 +1,4 @@
+import datetime
 import math
 from functools import partial
 
@@ -7,19 +8,22 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tensorboardX import SummaryWriter
 from torch.nn.utils.rnn import PackedSequence
-from torchvision.transforms.functional import to_grayscale, to_tensor
+from torchvision.transforms.functional import to_tensor
 from tqdm import tqdm
 
 from .dataloader import QuestionLoader
-from .util import PrefetchIter, SeqBatch, critical, device
+from .util import PrefetchIter, SeqBatch, critical, stateful
+from . import device
 
 
 @fret.configurable
+@stateful('epoch', 'run_id', 'n_batches')
 class Trainer:
     def __init__(self, feature_extractor):
-        self.ques = QuestionLoader('data/ques.txt', 'data/words.txt',
-                                   'data/imgs')
+        self.ques = QuestionLoader('data/raw/ques.txt', 'data/words.txt',
+                                   'data/imgs', 'data/raw/id_area.txt')
 
         self.feature_extractor = \
             feature_extractor(_stoi=self.ques.stoi).to(device)
@@ -28,38 +32,105 @@ class Trainer:
                                          pretrain=True)
         self.eval_pipeline = self.feature_extractor.make_batch
 
+        # training states
+        self.epoch = 0
+        self.run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        self.n_batches = 0
+        self._cur_iter = None
+        self._iter_state = None
+        self._cur_optim = None
+        self._optim_state = None
+
     def pretrain(self, args):
         self.feature_extractor.train()
-        self.ques.pipeline = self.pretrain_pipeline
 
-        optim = torch.optim.Adam(self.feature_extractor.parameters())
+        if args.resume:
+            self.load_state()
 
-        for epoch in range(args.n_epochs):
-            train_iter = PrefetchIter(self.ques, batch_size=args.batch_size)
+        optim = self.optimizer(self.feature_extractor.parameters())
+
+        writer = SummaryWriter(str(self.ws.log_path /
+                                   ('pretrain_%s/' % self.run_id)))
+
+        try:
+            self.load(self.feature_extractor, 'int')
+        except FileNotFoundError:
+            pass
+
+        for self.epoch in range(self.epoch, args.n_epochs):
+            train_iter = self.pretrain_iter(args.batch_size)
 
             try:
-                for i, batch in critical(enumerate(tqdm(train_iter))):
+                bar = tqdm(train_iter, initial=train_iter.pos)
+                for batch in critical(bar):
+                    self.n_batches += 1
                     loss = self.feature_extractor.pretrain_loss(batch)
+                    writer.add_scalar('pretrain/loss',
+                                      loss.item(), self.n_batches)
                     optim.zero_grad()
                     loss.backward()
                     optim.step()
             except KeyboardInterrupt:
+                self.save_state()
                 raise
+
+        self.save_state()
+
+    def pretrain_iter(self, batch_size):
+        self.ques.pipeline = self.pretrain_pipeline
+        self._cur_iter = PrefetchIter(self.ques, batch_size=batch_size)
+        if self._iter_state is not None:
+            self._cur_iter.load_state_dict(self._iter_state)
+            self._iter_state = None
+        return self._cur_iter
+
+    def optimizer(self, *parameters, **kwargs):
+        self._cur_optim = [torch.optim.Adam(p, **kwargs) for p in parameters]
+        if self._optim_state is not None:
+            for o, s in zip(self._cur_optim, self._optim_state):
+                o.load_state_dict(s)
+            self._optim_state = None
+        if len(self._cur_optim) == 1:
+            return self._cur_optim[0]
+        else:
+            return self._cur_optim
 
     def eval(self, args):
         pass
 
+    def state_dict(self):
+        return {
+            'train_iter_state': self._cur_iter.state_dict(),
+            'optim_state': [o.state_dict() for o in self._cur_optim],
+            'model_state': self.feature_extractor.state_dict()
+        }
+
+    def load_state_dict(self, state):
+        self._iter_state = state['train_iter_state']
+        self._optim_state = state['optim_state']
+        self.feature_extractor.load_state_dict(state['model_state'])
+
     def save_state(self):
-        pass
+        state_path = self.ws.checkpoint_path / 'trainer.state.pt'
+        torch.save(self.state_dict(), state_path.open('wb'))
 
     def load_state(self):
-        pass
+        state_path = self.ws.checkpoint_path / 'trainer.state.pt'
+        if state_path.exists():
+            state = torch.load(state_path.open('rb'))
+            self.load_state_dict(state)
 
-    def save_model(self, tag):
-        pass
+    def save(self, model: nn.Module, tag):
+        path = self.ws.checkpoint_path
+        cp_path = path / ('%s_%s.pt' % (model.__class__.__name__, str(tag)))
+        torch.save(model.state_dict(), cp_path.open('wb'))
 
-    def load_model(self, tag):
-        pass
+    def load(self, model: nn.Module, tag):
+        path = self.ws.checkpoint_path
+        cp_path = path / ('%s_%s.pt' % (model.__class__.__name__, str(tag)))
+        model.load_state_dict(
+            torch.load(cp_path.open('rb'), map_location=lambda s, _: s)
+        )
 
 
 @fret.configurable
@@ -110,7 +181,7 @@ class RNN(FeatureExtractor):
         rnn_size = self.feat_size
 
         self.stoi = _stoi
-        vocab_size = len(_stoi)
+        vocab_size = len(_stoi['word'])
 
         self.embedding = nn.Embedding(vocab_size, emb_size)
         if rnn == 'GRU':
@@ -123,7 +194,7 @@ class RNN(FeatureExtractor):
         self.output = nn.Linear(rnn_size, vocab_size)
 
     def make_batch(self, data, pretrain=False):
-        qs = [[x if isinstance(x, int) else self.stoi.get('{img}') or 0
+        qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
                for x in q.content] for q in data]
         if pretrain:
             inputs = [[0] + q for q in qs]
@@ -172,11 +243,11 @@ class HRNN(FeatureExtractor):
         feat_size = self.feat_size
 
         self.stoi = _stoi
-        vocab_size = len(_stoi)
+        vocab_size = len(_stoi['word'])
 
         self.we = nn.Embedding(vocab_size, emb_size)
         self.ie = ImageAE(emb_size)
-        self.me = MetaAE(emb_size)
+        self.me = MetaAE(len(_stoi['area']), emb_size)
 
         if rnn == 'GRU':
             self.rnn = nn.GRU(emb_size, feat_size, layers)
@@ -195,9 +266,11 @@ class HRNN(FeatureExtractor):
         embs = []
         gt = []
         for q in data:
-            _embs = [self.we(torch.tensor([0], device=device))]
-            _gt = []
-
+            meta = torch.zeros(len(self.stoi['area'])).to(device)
+            meta[q.labels.get('area') or []] = 1
+            _embs = [self.we(torch.tensor([0], device=device)),
+                     self.me.enc(meta.unsqueeze(0))]
+            _gt = [meta]
             for w in q.content:
                 if isinstance(w, int):
                     _embs.append(self.we(torch.tensor([w], device=device)))
@@ -225,10 +298,10 @@ class HRNN(FeatureExtractor):
                 if v.size() == torch.Size([1]):  # word
                     words.append(v)
                     wmask[ind] = 1
-                elif len(v.size()) == 1:
+                elif len(v.size()) == 1:  # meta
                     metas.append(v.unsqueeze(0))
                     mmask[ind] = 1
-                else:
+                else:  # img
                     ims.append(v.unsqueeze(0))
                     imask[ind] = 1
         words = torch.cat(words, dim=0) if words else None
@@ -254,20 +327,28 @@ class HRNN(FeatureExtractor):
         y = self(input)
         y_pred = y[0].data
 
-        wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
-            .view(-1, self.feat_size)
-        ifea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
-            .view(-1, self.feat_size)
-        mfea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
-            .view(-1, self.feat_size)
+        wloss = iloss = mloss = 0.
 
-        out = self.woutput(wfea)
-        wloss = F.cross_entropy(out, words)
+        if words is not None:
+            wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
+                .view(-1, self.feat_size)
+            out = self.woutput(wfea)
+            wloss = F.cross_entropy(out, words)
 
-        out = self.ioutput(ifea)
-        iloss = F.mse_loss(self.ie.dec(out), ims)
+        if ims is not None:
+            ifea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
+                .view(-1, self.feat_size)
+            out = self.ioutput(ifea)
+            iloss = F.mse_loss(self.ie.dec(out), ims)
 
-        loss = wloss + iloss
+        if metas is not None:
+            mfea = torch.masked_select(y_pred, mmask.unsqueeze(1)) \
+                .view(-1, self.feat_size)
+
+            out = self.moutput(mfea)
+            mloss = F.binary_cross_entropy_with_logits(self.me.dec(out), metas)
+
+        loss = wloss + iloss + mloss
         return loss
 
     def init_h(self, batch_size):
@@ -310,6 +391,7 @@ class TransformerLM(fret.Module):
 class BERT(torch.nn.Module):
     """ Transformer with Self-Attentive Blocks"""
 
+    # noinspection PyUnusedLocal
     def __init__(self,
                  vocab_size=(0, 'size of vocabulary'),
                  dim=(768, 'dimension of hidden layer in transformer encoder'),
@@ -335,12 +417,12 @@ class BERT(torch.nn.Module):
 
 
 def gelu(x):
-    "Implementation of the gelu activation function by Hugging Face"
+    """Implementation of the gelu activation function by Hugging Face"""
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
 
 
 class LayerNorm(nn.Module):
-    "A layernorm module in the TF style (epsilon inside the square root)."
+    """A layernorm module in the TF style (epsilon inside the square root)."""
 
     def __init__(self, cfg, variance_epsilon=1e-12):
         super().__init__()
@@ -356,7 +438,7 @@ class LayerNorm(nn.Module):
 
 
 class Embeddings(nn.Module):
-    "The embedding module from word, position and token_type embeddings."
+    """The embedding module from word, position and token_type embeddings."""
 
     def __init__(self, cfg):
         super().__init__()
@@ -470,5 +552,8 @@ class ImageAE:
 
 
 class MetaAE:
-    def __init__(self, emb_size):
-        pass
+    def __init__(self, meta_size, emb_size):
+        self.enc = nn.Sequential(nn.Linear(meta_size, 256),
+                                 nn.Linear(256, emb_size))
+        self.dec = nn.Sequential(nn.Linear(emb_size, 256),
+                                 nn.Linear(256, meta_size))

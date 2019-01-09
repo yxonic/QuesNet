@@ -4,15 +4,16 @@ level vectors."""
 import csv
 import os
 from collections import namedtuple
+from pathlib import Path
 
 import torchtext as tt
 from PIL import Image
-from torchvision.transforms.functional import to_tensor, to_grayscale
+from torchvision.transforms.functional import to_grayscale
 
 from .util import lines
 
 Question = namedtuple('Question',
-                      ['id', 'content', 'answer', 'false_options'])
+                      ['id', 'content', 'answer', 'false_options', 'labels'])
 
 
 class QuestionLoader:
@@ -21,9 +22,28 @@ class QuestionLoader:
         """Read question file as data list. Same behavior on same file."""
         self.ques = lines(ques_file, skip=1)
         self.img_dir = img_dir
-        self.label_file = label_file
-        self.itos = lines(word_file)
-        self.stoi = {s: i for i, s in enumerate(self.itos)}
+        self.labels = []
+
+        self.itos = dict()
+        self.stoi = dict()
+        self.itos['word'] = lines(word_file)
+        self.stoi['word'] = {s: i for i, s in enumerate(self.itos['word'])}
+
+        for filename in label_file:
+            f = lines(filename)
+            label_name = f[0].split('\t')[1]
+            map = {}
+            for l in f[1:]:
+                qid, v = l.split('\t')
+                map[qid] = v if label_name.startswith('[') else float(v)
+            if label_name.startswith('['):  # [label]
+                label_name = label_name[1:-1]
+                f = str(Path(filename).parent / (label_name + '_list.txt'))
+                self.itos[label_name] = lines(f)
+                self.stoi[label_name] = {s: i for i, s in
+                                         enumerate(self.itos[label_name])}
+            self.labels.append((label_name, map))
+
         self.pipeline = pipeline
 
     def __len__(self):
@@ -44,20 +64,31 @@ class QuestionLoader:
                         im = im.resize((56, 56))
                         content[i] = to_grayscale(im)
                     except Exception:
-                        content[i] = self.stoi['{img}']
+                        content[i] = self.stoi['word']['{img}']
                 else:
-                    content[i] = self.stoi.get(content[i]) or 0
+                    content[i] = self.stoi['word'].get(content[i]) or 0
 
-            answer = [self.stoi.get(a) or 0 for a in answer.split()]
+            answer = [self.stoi['word'].get(a) or 0 for a in answer.split()]
 
             if len(false_options):
-                false_options = [[self.stoi.get(x) or 0 for x in o.split()]
+                false_options = [[self.stoi['word'].get(x) or 0
+                                  for x in o.split()]
                                  for o in false_options.split('::')]
 
             else:
                 false_options = None
 
-            qs.append(Question(qid, content, answer, false_options))
+            labels = {}
+            for name, map in self.labels:
+                if qid in map:
+                    v = map[qid]
+                    if isinstance(v, float):
+                        labels[name] = v
+                    else:
+                        labels[name] = [self.stoi[name].get(k) or 0
+                                        for k in v.split(',')]
+
+            qs.append(Question(qid, content, answer, false_options, labels))
 
         if callable(self.pipeline):
             return self.pipeline(qs)
