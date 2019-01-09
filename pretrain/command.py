@@ -1,13 +1,10 @@
 """Define commands."""
 import logging
 import os
-import random
-import shutil
 import subprocess
 import sys
 import datetime
 from itertools import islice
-from pathlib import Path
 
 from tqdm import tqdm
 
