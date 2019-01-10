@@ -251,14 +251,16 @@ class HRNN(FeatureExtractor):
             ifea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
             out = self.ioutput(ifea)
-            iloss = self.ie.loss(ims, out) * self.i_lambda
+            iloss = (self.ie.loss(ims, out) +
+                     self.ie.loss(ims))* self.i_lambda
 
         if metas is not None:
             mfea = torch.masked_select(y_pred, mmask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
 
             out = self.moutput(mfea)
-            mloss = self.me.loss(metas, out) * self.m_lambda
+            mloss = (self.me.loss(metas, out) +
+                     self.me.loss(metas)) * self.m_lambda
 
         return {
             'word_loss': wloss,
@@ -455,16 +457,7 @@ def merge_last(x, n_dims):
     return x.view(*s[:-n_dims], -1)
 
 
-class VAE:
-    def encoder(self, item):
-        raise NotImplementedError
-
-    def decoder(self, emb):
-        raise NotImplementedError
-
-    def recons_loss(self, input, target):
-        raise NotImplementedError
-
+class VAE(nn.Module):
     def enc(self, item):
         return self.encoder(item)
 
@@ -533,6 +526,7 @@ class ImageAE(VAE):
 
 class MetaAE(VAE):
     def __init__(self, meta_size, emb_size):
+        super().__init__()
         self.emb_size = emb_size
         self.recons_loss = nn.BCEWithLogitsLoss()
         self.encoder = nn.Sequential(nn.Linear(meta_size, emb_size),
