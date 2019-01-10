@@ -83,7 +83,6 @@ class RNN(FeatureExtractor):
 
     def load_emb(self, emb):
         self.embedding.weight.data.copy_(torch.from_numpy(emb))
-        self.embedding.weight.requires_grad = False
 
     def make_batch(self, data, pretrain=False):
         qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
@@ -137,6 +136,7 @@ class HRNN(FeatureExtractor):
 
         self.stoi = _stoi
         vocab_size = len(_stoi['word'])
+        self.itos = {v: k for k, v in self.stoi['word'].items()}
 
         self.we = nn.Embedding(vocab_size, emb_size)
         embs = load_word2vec(emb_size)
@@ -162,7 +162,6 @@ class HRNN(FeatureExtractor):
 
     def load_emb(self, emb):
         self.we.weight.data.copy_(torch.from_numpy(emb))
-        self.we.weight.requires_grad = False
 
     def make_batch(self, data, pretrain=False):
         """Returns embeddings"""
@@ -188,7 +187,6 @@ class HRNN(FeatureExtractor):
             embs.append(torch.cat(_embs, dim=0))
             gt.append(_gt)
 
-        _embs = embs
         embs = SeqBatch(embs)
 
         length = sum(embs.lens)
@@ -204,14 +202,18 @@ class HRNN(FeatureExtractor):
             for j, v in enumerate(_gt):
                 ind = embs.index((j, i))
                 if v.size() == torch.Size([1]):  # word
-                    words.append(v)
+                    words.append((v, ind))
                     wmask[ind] = 1
                 elif len(v.size()) == 1:  # meta
-                    metas.append(v.unsqueeze(0))
+                    metas.append((v.unsqueeze(0), ind))
                     mmask[ind] = 1
                 else:  # img
-                    ims.append(v.unsqueeze(0))
+                    ims.append((v.unsqueeze(0), ind))
                     imask[ind] = 1
+        words = [x[0] for x in sorted(words, key=lambda x: x[1])]
+        ims = [x[0] for x in sorted(ims, key=lambda x: x[1])]
+        metas = [x[0] for x in sorted(metas, key=lambda x: x[1])]
+
         words = torch.cat(words, dim=0) if words else None
         ims = torch.cat(ims, dim=0) if ims else None
         metas = torch.cat(metas, dim=0) if metas else None
@@ -219,7 +221,7 @@ class HRNN(FeatureExtractor):
         if pretrain:
             return embs, words, ims, metas, wmask, imask, mmask
         else:
-            return SeqBatch(embs)
+            return embs
 
     def forward(self, batch: SeqBatch):
         packed = batch.packed()
@@ -241,6 +243,8 @@ class HRNN(FeatureExtractor):
             wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
             out = self.woutput(wfea)
+            # print(','.join(self.itos[x.item()] for x in words))
+            # print(','.join(self.itos[x.item()] for x in out.argmax(dim=1)))
             wloss = F.cross_entropy(out, words)
 
         if ims is not None:
