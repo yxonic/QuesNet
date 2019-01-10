@@ -215,6 +215,7 @@ class SeqBatch:
 
     def padded(self):
         seqs = [torch.tensor(s, dtype=self.dtype, device=self.device)
+                if not isinstance(s, torch.Tensor) else s
                 for s in self.seqs]
         ind = torch.tensor(self.ind, dtype=torch.long, device=self.device)
         return pad_sequence(seqs).index_select(1, ind)

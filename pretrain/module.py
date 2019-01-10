@@ -1,6 +1,4 @@
-import datetime
 import math
-from functools import partial
 
 import fret
 
@@ -8,129 +6,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from tensorboardX import SummaryWriter
 from torch.nn.utils.rnn import PackedSequence
 from torchvision.transforms.functional import to_tensor
-from tqdm import tqdm
 
-from .dataloader import QuestionLoader
-from .util import PrefetchIter, SeqBatch, critical, stateful
+from .dataloader import load_word2vec
+from .util import SeqBatch
 from . import device
-
-
-@fret.configurable
-@stateful('epoch', 'run_id', 'n_batches')
-class Trainer:
-    def __init__(self, feature_extractor):
-        self.ques = QuestionLoader('data/raw/ques.txt', 'data/words.txt',
-                                   'data/imgs', 'data/raw/id_area.txt')
-
-        self.feature_extractor = \
-            feature_extractor(_stoi=self.ques.stoi).to(device)
-
-        self.pretrain_pipeline = partial(self.feature_extractor.make_batch,
-                                         pretrain=True)
-        self.eval_pipeline = self.feature_extractor.make_batch
-
-        # training states
-        self.epoch = 0
-        self.run_id = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        self.n_batches = 0
-        self._cur_iter = None
-        self._iter_state = None
-        self._cur_optim = None
-        self._optim_state = None
-
-    def pretrain(self, args):
-        self.feature_extractor.train()
-
-        if args.resume:
-            self.load_state()
-
-        optim = self.optimizer(self.feature_extractor.parameters())
-
-        writer = SummaryWriter(str(self.ws.log_path /
-                                   ('pretrain_%s/' % self.run_id)))
-
-        try:
-            self.load(self.feature_extractor, 'int')
-        except FileNotFoundError:
-            pass
-
-        for self.epoch in range(self.epoch, args.n_epochs):
-            train_iter = self.pretrain_iter(args.batch_size)
-
-            try:
-                bar = tqdm(train_iter, initial=train_iter.pos)
-                for batch in critical(bar):
-                    self.n_batches += 1
-                    loss = self.feature_extractor.pretrain_loss(batch)
-                    writer.add_scalar('pretrain/loss',
-                                      loss.item(), self.n_batches)
-                    optim.zero_grad()
-                    loss.backward()
-                    optim.step()
-            except KeyboardInterrupt:
-                self.save_state()
-                raise
-
-        self.save_state()
-
-    def pretrain_iter(self, batch_size):
-        self.ques.pipeline = self.pretrain_pipeline
-        self._cur_iter = PrefetchIter(self.ques, batch_size=batch_size)
-        if self._iter_state is not None:
-            self._cur_iter.load_state_dict(self._iter_state)
-            self._iter_state = None
-        return self._cur_iter
-
-    def optimizer(self, *parameters, **kwargs):
-        self._cur_optim = [torch.optim.Adam(p, **kwargs) for p in parameters]
-        if self._optim_state is not None:
-            for o, s in zip(self._cur_optim, self._optim_state):
-                o.load_state_dict(s)
-            self._optim_state = None
-        if len(self._cur_optim) == 1:
-            return self._cur_optim[0]
-        else:
-            return self._cur_optim
-
-    def eval(self, args):
-        pass
-
-    def state_dict(self):
-        return {
-            'train_iter_state': self._cur_iter.state_dict(),
-            'optim_state': [o.state_dict() for o in self._cur_optim],
-            'model_state': self.feature_extractor.state_dict()
-        }
-
-    def load_state_dict(self, state):
-        self._iter_state = state['train_iter_state']
-        self._optim_state = state['optim_state']
-        self.feature_extractor.load_state_dict(state['model_state'])
-
-    def save_state(self):
-        state_path = self.ws.checkpoint_path / 'trainer.state.pt'
-        torch.save(self.state_dict(), state_path.open('wb'))
-
-    def load_state(self):
-        state_path = self.ws.checkpoint_path / 'trainer.state.pt'
-        if state_path.exists():
-            state = torch.load(state_path.open('rb'))
-            self.load_state_dict(state)
-
-    def save(self, model: nn.Module, tag):
-        path = self.ws.checkpoint_path
-        cp_path = path / ('%s_%s.pt' % (model.__class__.__name__, str(tag)))
-        torch.save(model.state_dict(), cp_path.open('wb'))
-
-    def load(self, model: nn.Module, tag):
-        path = self.ws.checkpoint_path
-        cp_path = path / ('%s_%s.pt' % (model.__class__.__name__, str(tag)))
-        model.load_state_dict(
-            torch.load(cp_path.open('rb'), map_location=lambda s, _: s)
-        )
 
 
 @fret.configurable
@@ -141,6 +22,9 @@ class FeatureExtractor(nn.Module):
 
     def make_batch(self, data, pretrain=False):
         """Make batch from input data (python data / np arrays -> tensors)"""
+        pass
+
+    def load_emb(self, emb):
         pass
 
     def pretrain_loss(self, batch):
@@ -184,6 +68,10 @@ class RNN(FeatureExtractor):
         vocab_size = len(_stoi['word'])
 
         self.embedding = nn.Embedding(vocab_size, emb_size)
+        embs = load_word2vec(emb_size)
+        if embs is not None:
+            self.load_emb(embs)
+
         if rnn == 'GRU':
             self.rnn = nn.GRU(emb_size, rnn_size, layers)
             self.h0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
@@ -192,6 +80,10 @@ class RNN(FeatureExtractor):
             self.h0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
             self.c0 = nn.Parameter(torch.rand(layers, 1, rnn_size))
         self.output = nn.Linear(rnn_size, vocab_size)
+
+    def load_emb(self, emb):
+        self.embedding.weight.data.copy_(torch.from_numpy(emb))
+        self.embedding.weight.requires_grad = False
 
     def make_batch(self, data, pretrain=False):
         qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
@@ -237,6 +129,7 @@ class HRNN(FeatureExtractor):
     def __init__(self, _stoi,
                  emb_size=(256, 'size of embedding vectors'),
                  rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
+                 i_lambda=5., m_lambda=5.,
                  layers=(1, 'number of layers'), **kwargs):
         super(HRNN, self).__init__(**kwargs)
 
@@ -246,8 +139,14 @@ class HRNN(FeatureExtractor):
         vocab_size = len(_stoi['word'])
 
         self.we = nn.Embedding(vocab_size, emb_size)
+        embs = load_word2vec(emb_size)
+        if embs is not None:
+            self.load_emb(embs)
+
         self.ie = ImageAE(emb_size)
         self.me = MetaAE(len(_stoi['area']), emb_size)
+        self.i_lambda = i_lambda
+        self.m_lambda = m_lambda
 
         if rnn == 'GRU':
             self.rnn = nn.GRU(emb_size, feat_size, layers)
@@ -261,6 +160,10 @@ class HRNN(FeatureExtractor):
         self.ioutput = nn.Linear(feat_size, emb_size)
         self.moutput = nn.Linear(feat_size, emb_size)
 
+    def load_emb(self, emb):
+        self.we.weight.data.copy_(torch.from_numpy(emb))
+        self.we.weight.requires_grad = False
+
     def make_batch(self, data, pretrain=False):
         """Returns embeddings"""
         embs = []
@@ -273,25 +176,30 @@ class HRNN(FeatureExtractor):
             _gt = [meta]
             for w in q.content:
                 if isinstance(w, int):
-                    _embs.append(self.we(torch.tensor([w], device=device)))
-                    _gt.append(torch.tensor([w], device=device))
+                    word = torch.tensor([w], device=device)
+                    _embs.append(self.we(word))
+                    _gt.append(word)
                 else:
-                    _embs.append(self.ie.enc(to_tensor(w).to(device)))
-                    _gt.append(to_tensor(w).to(device))
+                    im = to_tensor(w).to(device)
+                    _embs.append(self.ie.enc(im.unsqueeze(0)))
+                    _gt.append(im)
             _gt.append(torch.tensor([0], device=device))
 
             embs.append(torch.cat(_embs, dim=0))
             gt.append(_gt)
 
+        _embs = embs
         embs = SeqBatch(embs)
 
         length = sum(embs.lens)
         words = []
         ims = []
         metas = []
+        p = embs.packed().data
         wmask = torch.zeros(length, device=device).byte()
         imask = torch.zeros(length, device=device).byte()
         mmask = torch.zeros(length, device=device).byte()
+
         for i, _gt in enumerate(gt):
             for j, v in enumerate(_gt):
                 ind = embs.index((j, i))
@@ -327,7 +235,7 @@ class HRNN(FeatureExtractor):
         y = self(input)
         y_pred = y[0].data
 
-        wloss = iloss = mloss = 0.
+        wloss = iloss = mloss = None
 
         if words is not None:
             wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
@@ -339,17 +247,20 @@ class HRNN(FeatureExtractor):
             ifea = torch.masked_select(y_pred, imask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
             out = self.ioutput(ifea)
-            iloss = F.mse_loss(self.ie.dec(out), ims)
+            iloss = self.ie.loss(ims, out) * self.i_lambda
 
         if metas is not None:
             mfea = torch.masked_select(y_pred, mmask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
 
             out = self.moutput(mfea)
-            mloss = F.binary_cross_entropy_with_logits(self.me.dec(out), metas)
+            mloss = self.me.loss(metas, out) * self.m_lambda
 
-        loss = wloss + iloss + mloss
-        return loss
+        return {
+            'word_loss': wloss,
+            'image_vae_loss': iloss,
+            'meta_vae_loss': mloss
+        }
 
     def init_h(self, batch_size):
         size = list(self.h0.size())
@@ -540,20 +451,89 @@ def merge_last(x, n_dims):
     return x.view(*s[:-n_dims], -1)
 
 
-class ImageAE:
+class VAE:
+    def encoder(self, item):
+        raise NotImplementedError
+
+    def decoder(self, emb):
+        raise NotImplementedError
+
+    def recons_loss(self, input, target):
+        raise NotImplementedError
+
+    def enc(self, item):
+        return self.encoder(item)
+
+    def dec(self, emb):
+        es = emb.size(1)
+        mu, logvar = emb[:,:es // 2], emb[:,es // 2:]
+        std = logvar.mul(0.5).exp_()
+        eps = torch.empty(std.size()).float().normal_().to(device)
+        z = eps.mul(std).add_(mu)
+        return self.decoder(z)
+
+    def loss(self, item, emb=None):
+        if emb is None:
+            out, mu, logvar = self(item)
+        else:
+            out = self.dec(emb)
+            es = emb.size(1)
+            mu, logvar = emb[:,:es // 2], emb[:,es // 2:]
+
+        bce = self.recons_loss(out, item)
+
+        kld_element = mu.pow(2).add_(logvar.exp()).mul_(-1).add_(1).add_(
+            logvar)
+        kld = kld_element.sum().mul_(-0.5)
+
+        return bce + kld
+
+    def forward(self, images):
+        emb = self.enc(images)
+        out = self.dec(emb)
+        es = emb.size(1)
+        mu, logvar = emb[:, :es // 2], emb[:, es // 2:]
+        return out, mu, logvar
+
+
+class ImageAE(VAE):
     def __init__(self, emb_size):
-        self.emb_size = emb_size
+        super().__init__()
+        self.recons_loss = nn.MSELoss()
+        self._encoder = nn.Sequential(
+            nn.Conv2d(1, 16, 3, stride=3),
+            nn.ReLU(True),
+            nn.MaxPool2d(2, stride=2),
+            nn.Conv2d(16, 32, 3, stride=2),
+            nn.ReLU(True),
+            nn.MaxPool2d(2, stride=1),
+            nn.Conv2d(32, emb_size, 3, stride=2)
+        )
+        self._decoder = nn.Sequential(
+            nn.ConvTranspose2d(emb_size // 2, 32, 3, stride=2),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(32, 16, 5, stride=3, padding=1),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(16, 8, 5, stride=3),
+            nn.ReLU(True),
+            nn.ConvTranspose2d(8, 1, 2, stride=2, padding=1),
+            nn.Sigmoid()
+        )
 
-    def enc(self, im):
-        return torch.zeros(im.size(0), self.emb_size)
+    def encoder(self, item):
+        return self._encoder(item).view(item.size(0), -1)
 
-    def dec(self, fea):
-        return torch.zeros(fea.size(0), 1, 56, 56)
+    def decoder(self, emb):
+        return self._decoder(emb.unsqueeze(-1).unsqueeze(-1))
 
 
-class MetaAE:
+class MetaAE(VAE):
     def __init__(self, meta_size, emb_size):
-        self.enc = nn.Sequential(nn.Linear(meta_size, 256),
-                                 nn.Linear(256, emb_size))
-        self.dec = nn.Sequential(nn.Linear(emb_size, 256),
-                                 nn.Linear(256, meta_size))
+        self.emb_size = emb_size
+        self.recons_loss = nn.BCEWithLogitsLoss()
+        self.encoder = nn.Sequential(nn.Linear(meta_size, emb_size),
+                                     nn.ReLU(True),
+                                     nn.Linear(emb_size, emb_size))
+        self.decoder = nn.Sequential(nn.Linear(emb_size // 2, emb_size),
+                                     nn.ReLU(True),
+                                     nn.Linear(emb_size, meta_size))

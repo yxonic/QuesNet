@@ -1,5 +1,5 @@
 [[source]]
-url = "https://mirrors.ustc.edu.cn/pypi/web/simple"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 verify_ssl = true
 name = "pypi"
 
@@ -14,7 +14,7 @@ tensorboardX = "*"
 [dev-packages]
 sphinx = "*"
 sphinx_rtd_theme = "*"
-pytest = "*"
+pytest = ">=4"
 pytest-cov = "*"
 
 [requires]

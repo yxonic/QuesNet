@@ -1,1 +1,4 @@
 appname = "pretrain"
+
+[common]
+word_file = "data/words.txt"
