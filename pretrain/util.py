@@ -9,21 +9,9 @@ import subprocess
 import threading
 
 import torch
-from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
+from torch.nn.utils.rnn import pack_padded_sequence
 
 sigint_handler = signal.getsignal(signal.SIGINT)
-
-
-def clip(v, low, high):
-    if v < low:
-        v = low
-    if v > high:
-        v = high
-    return v
-
-
-def argsort(seq):
-    return sorted(range(len(seq)), key=seq.__getitem__)
 
 
 def critical(f):
@@ -72,6 +60,18 @@ def stateful(*states):
         return cls
 
     return wrapper
+
+
+def clip(v, low, high):
+    if v < low:
+        v = low
+    if v > high:
+        v = high
+    return v
+
+
+def argsort(seq):
+    return sorted(range(len(seq)), key=seq.__getitem__)
 
 
 # noinspection PyPep8Naming
@@ -211,14 +211,34 @@ class SeqBatch:
                 c += 1
 
     def packed(self):
-        return pack_padded_sequence(self.padded(), self.lens)
+        ind = torch.tensor(self.ind, dtype=torch.long, device=self.device)
+        padded = self.padded()[0].index_select(1, ind)
+        return pack_padded_sequence(padded, self.lens)
 
-    def padded(self):
+    def padded(self, max_len=None, batch_first=False):
         seqs = [torch.tensor(s, dtype=self.dtype, device=self.device)
                 if not isinstance(s, torch.Tensor) else s
                 for s in self.seqs]
-        ind = torch.tensor(self.ind, dtype=torch.long, device=self.device)
-        return pad_sequence(seqs).index_select(1, ind)
+        if max_len is None:
+            max_len = self.lens[0]
+        mask = [[1] * len(s) + [0] * (max_len - len(s)) for s in seqs]
+
+        max_size = seqs[0].size()
+        trailing_dims = max_size[1:]
+        if batch_first:
+            out_dims = (len(seqs), max_len) + trailing_dims
+        else:
+            out_dims = (max_len, len(seqs)) + trailing_dims
+
+        padded = seqs[0].new(*out_dims).fill_(0)
+        for i, tensor in enumerate(seqs):
+            length = tensor.size(0)
+            # use index notation to prevent duplicate references to the tensor
+            if batch_first:
+                padded[i, :length, ...] = tensor
+            else:
+                padded[:length, i, ...] = tensor
+        return padded, torch.tensor(mask).byte().to(self.device)
 
     def index(self, item):
         return self._index[item[0], self.inv[item[1]]]
@@ -267,5 +287,8 @@ class TableBuilder:
 
 
 if __name__ == '__main__':
-    b = SeqBatch([[1, 2], [1, 2, 3, 4, 5], [1], [1, 2, 3], [1, 2, 3]])
+    b = SeqBatch([[1, 2], [1, 2, 3, 4, 5, 6], [1], [1, 2, 3], [1, 2, 3]])
     print(b.index((2, 3)), b.packed().data[b.index((2, 3))])
+    print(b.padded()[0].size())
+    print(b.padded(max_len=20, batch_first=True)[0].size())
+    print(b.padded(max_len=20, batch_first=True)[1])

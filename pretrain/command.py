@@ -14,7 +14,8 @@ from .util import stateful, critical, PrefetchIter
 
 
 @fret.command
-def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, restart=False):
+def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, lr=0.1,
+             restart=False):
     """Pretrain feature extraction model"""
     logger = ws.logger('pretrain')
     trainer = Trainer(ws)
@@ -24,7 +25,7 @@ def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, restart=False):
 @fret.command
 def eval(ws):
     """Use feature extraction model for each evaluation task"""
-    trainer: Trainer = ws.build_module()
+    trainer = Trainer(ws)
     trainer.eval(eval.args)
 
 
@@ -63,7 +64,7 @@ class Trainer:
 
         self.model.train()
 
-        optim = self.optimizer(self.model.parameters())
+        optim = self.optimizer(self.model, lr=args.lr)
         writer = SummaryWriter(str(self.ws.log_path /
                                    ('pretrain_%s/' % self.run_id)))
 
@@ -113,8 +114,11 @@ class Trainer:
             self._iter_state = None
         return self._cur_iter
 
-    def optimizer(self, *parameters, **kwargs):
-        self._cur_optim = [torch.optim.Adam(p, **kwargs) for p in parameters]
+    def optimizer(self, *models, **kwargs):
+        self._cur_optim = [m.get_optimizer(**kwargs)
+                           if hasattr(m, 'get_optimizer')
+                           else torch.optim.Adam(m.parameters(), **kwargs)
+                           for m in models]
         if self._optim_state is not None:
             for o, s in zip(self._cur_optim, self._optim_state):
                 o.load_state_dict(s)
@@ -125,6 +129,9 @@ class Trainer:
             return self._cur_optim
 
     def eval(self, args):
+        pass
+
+    def eval_sp(self, args):
         pass
 
     def state_dict(self):

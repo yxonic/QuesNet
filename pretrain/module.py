@@ -1,4 +1,5 @@
 import math
+import random
 
 import fret
 
@@ -10,6 +11,7 @@ from torch.nn.utils.rnn import PackedSequence
 from torchvision.transforms.functional import to_tensor
 
 from .dataloader import load_word2vec
+from .optim import BertAdam
 from .util import SeqBatch
 from . import device
 
@@ -22,20 +24,20 @@ class FeatureExtractor(nn.Module):
 
     def make_batch(self, data, pretrain=False):
         """Make batch from input data (python data / np arrays -> tensors)"""
-        pass
+        return torch.tensor(data)
 
     def load_emb(self, emb):
         pass
 
     def pretrain_loss(self, batch):
         """Returns pretraining loss on a batch of data"""
-        pass
+        raise NotImplementedError
 
     def forward(self, *input):
-        pass
+        raise NotImplementedError
 
 
-class _Predictor:
+class Predictor:
     def __init__(self, out_dim):
         pass
 
@@ -43,7 +45,7 @@ class _Predictor:
         pass
 
 
-class _ScorePrediction:
+class SP:
     def __init__(self):
         pass
 
@@ -145,6 +147,7 @@ class HRNN(FeatureExtractor):
 
         self.ie = ImageAE(emb_size)
         self.me = MetaAE(len(_stoi['area']), emb_size)
+
         self.i_lambda = i_lambda
         self.m_lambda = m_lambda
 
@@ -243,8 +246,6 @@ class HRNN(FeatureExtractor):
             wfea = torch.masked_select(y_pred, wmask.unsqueeze(1)) \
                 .view(-1, self.feat_size)
             out = self.woutput(wfea)
-            # print(','.join(self.itos[x.item()] for x in words))
-            # print(','.join(self.itos[x.item()] for x in out.argmax(dim=1)))
             wloss = F.cross_entropy(out, words)
 
         if ims is not None:
@@ -252,7 +253,7 @@ class HRNN(FeatureExtractor):
                 .view(-1, self.feat_size)
             out = self.ioutput(ifea)
             iloss = (self.ie.loss(ims, out) +
-                     self.ie.loss(ims))* self.i_lambda
+                     self.ie.loss(ims)) * self.i_lambda
 
         if metas is not None:
             mfea = torch.masked_select(y_pred, mmask.unsqueeze(1)) \
@@ -277,60 +278,199 @@ class HRNN(FeatureExtractor):
             return self.h0.expand(size), self.c0.expand(size)
 
 
-class ELMo(fret.Module):
-    @classmethod
-    def add_arguments(cls, parser):
-        pass
-
-    def forward(self, *input):
-        pass
-
-
-class ULMFiT(fret.Module):
-    @classmethod
-    def add_arguments(cls, parser):
-        pass
-
-    def forward(self, *input):
-        pass
-
-
-class TransformerLM(fret.Module):
-    @classmethod
-    def add_arguments(cls, parser):
-        pass
-
-    def forward(self, *input):
-        pass
+class ELMo:
+    pass
 
 
 @fret.configurable
-class BERT(torch.nn.Module):
+class BERT(FeatureExtractor):
     """ Transformer with Self-Attentive Blocks"""
 
     # noinspection PyUnusedLocal
-    def __init__(self,
-                 vocab_size=(0, 'size of vocabulary'),
-                 dim=(768, 'dimension of hidden layer in transformer encoder'),
-                 n_layers=(12, 'numher of hidden Layers'),
-                 n_heads=(12, 'numher of heads in multi-headed attn layers'),
+    def __init__(self, _stoi,
+                 n_layers=(12, 'number of hidden Layers'),
+                 n_heads=(12, 'number of heads in multi-headed attn layers'),
                  dim_ff=(768 * 4, 'dimension of intermediate layers in '
-                                  'positionwise feedforward net'),
+                                  'position-wise feed-forward net'),
                  p_drop_hidden=(0.1, 'probability of dropout of hid Layers'),
                  p_drop_attn=(0.1, 'probability of dropout of attn Layers'),
                  max_len=(512, 'maximum length for positional embeddings'),
-                 n_segments=2):
-        super(BERT, self).__init__()
+                 **args):
+        super(BERT, self).__init__(**args)
         cfg = self.config
+        self.vocab_size = cfg['vocab_size'] = len(_stoi['word'])
+        cfg['dim'] = self.feat_size
+
+        self.stoi = _stoi
+        self.max_len = max_len
+
         self.embed = Embeddings(cfg)
         self.blocks = \
             torch.nn.ModuleList([Block(cfg) for _ in range(cfg.n_layers)])
 
-    def forward(self, x, seg, mask):
-        h = self.embed(x, seg)
+        # modules for pretrain
+        self.fc = nn.Linear(cfg.dim, cfg.dim)
+        self.activ1 = nn.Tanh()
+        self.linear = nn.Linear(cfg.dim, cfg.dim)
+        self.activ2 = gelu
+        self.norm = LayerNorm(cfg)
+        # decoder is shared with embedding layer
+        embed_weight = self.embed.tok_embed.weight
+        n_vocab, n_dim = embed_weight.size()
+        self.decoder = nn.Linear(n_dim, n_vocab, bias=False)
+        self.decoder.weight = embed_weight
+        self.decoder_bias = nn.Parameter(torch.zeros(n_vocab))
+
+    def get_optimizer(self, **kwargs):
+        return BertAdam(self.parameters(), **kwargs)
+
+    def make_batch(self, data, pretrain=False):
+        qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
+               for x in q.content] for q in data]
+
+        if not pretrain:
+            return SeqBatch([self.embed(torch.tensor(q).long().to(device))
+                             for q in qs], device=device).padded(
+                max_len=self.max_len, batch_first=True)[0]
+
+        masks = []
+        target = []
+        embs = []
+        for q in qs:
+            _m = []
+            _embs = self.embed(torch.tensor(q).long().to(device))
+            for i, w in enumerate(q):
+                # TODO: change mask strategy to BERT
+                if random.random() < 0.8:  # 80%
+                    _embs[i] *= 0.
+                    _m.append(1)
+                    target.append(w)
+                elif random.random() < 0.5:  # 10%
+                    w = random.choice(range(0, self.vocab_size))
+                    _embs[i] = self.embed(
+                        torch.tensor([w]).long().to(device),
+                        torch.tensor([i]).long().to(device))
+                    _m.append(1)
+                    target.append(w)
+                else:
+                    _m.append(0)
+            masks.append(_m)
+            embs.append(_embs)
+
+        input = SeqBatch(embs, device=device).padded(self.max_len, True)[0]
+
+        masks = SeqBatch(masks, device=device)
+        mask = masks.padded(self.max_len, batch_first=True)[0].byte()
+        target = torch.tensor(target).long().to(device)
+        batch = input, mask
+
+        return batch, mask, target
+
+    def load_emb(self, emb):
+        self.embed.tok_embed.weight.data.copy_(torch.from_numpy(emb))
+
+    def pretrain_loss(self, batch):
+        batch, mask, target = batch
+        h, _ = self(batch)
+
+        h_masked = torch.masked_select(h, mask[:, :, None]).view(-1, h.size(2))
+        h_masked = self.norm(self.activ2(self.linear(h_masked)))
+        logits_lm = self.decoder(h_masked) + self.decoder_bias
+
+        loss = F.cross_entropy(logits_lm, target)
+        return loss
+
+    def forward(self, batch):
+        h, mask = batch
         for block in self.blocks:
             h = block(h, mask)
-        return h
+        return h, self.activ1(self.fc(h[:, 0]))
+
+
+@fret.configurable
+class QuesNet(BERT):
+    def __init__(self, **kwargs):
+        super(QuesNet, self).__init__(**kwargs)
+        cfg = self.config
+
+        self.stoi['word']['<sep>'] = self.vocab_size
+        self.vocab_size += 1
+
+        self.ie = ImageAE(cfg.dim_ff)
+        self.me = MetaAE(len(self.stoi['area']), cfg.dim_ff)
+        self.woutput = nn.Linear(cfg.dim, self.vocab_size)
+        self.ioutput = nn.Linear(cfg.dim, cfg.dim_ff)
+        self.moutput = nn.Linear(cfg.dim, cfg.dim_ff)
+
+    def make_batch(self, data, pretrain=False):
+        full_batch = []
+        full_wm, full_wt, full_im, full_it, full_mm, full_mt = \
+            ([] for _ in range(6))
+        for q in data:
+            for item in q:
+                pass
+        full_batch, seq_mask = SeqBatch(full_batch).padded(self.max_len, True)
+
+        if not pretrain:
+            return full_batch
+
+        full_wm, full_wt, full_im, full_it, full_mm, full_mt = \
+            (torch.cat(v, dim=0) for v in
+             [full_wm, full_wt, full_im, full_it, full_mm, full_mt])
+
+        w_batch = []
+        w_mask = []
+        w_target = []
+        for q in data:
+            for item in q:
+                pass
+        w_batch, _ = SeqBatch(w_batch).padded(self.max_len, True)
+        w_mask, _ = SeqBatch(w_mask).padded(self.max_len, True)
+        w_target = torch.cat(w_target, dim=0)
+
+        i_batch = []
+        i_mask = []
+        i_target = []
+        for q in data:
+            for item in q:
+                pass
+        i_batch, _ = SeqBatch(i_batch).padded(self.max_len, True)
+        i_mask, _ = SeqBatch(i_mask).padded(self.max_len, True)
+        i_target = torch.cat(i_target, dim=0)
+
+        m_batch = []
+        m_mask = []
+        m_target = []
+        for q in data:
+            for item in q:
+                pass
+        m_batch, _ = SeqBatch(m_batch).padded(self.max_len, True)
+        m_mask, _ = SeqBatch(m_mask).padded(self.max_len, True)
+        m_target = torch.cat(m_target, dim=0)
+
+        pos_batch = []
+        for q in data:
+            for item in q:
+                pass
+        pos_batch, pos_mask = SeqBatch(pos_batch).padded(self.max_len, True)
+
+        neg_batch = []
+        for q in data:
+            for item in q:
+                pass
+        neg_batch, neg_mask = SeqBatch(neg_batch).padded(self.max_len, True)
+
+        return (
+            (full_batch, full_wm, full_wt, full_im, full_it, full_mm, full_mt),
+            (w_batch, w_mask, w_target),
+            (i_batch, i_mask, i_target),
+            (m_batch, m_mask, m_target),
+            (pos_batch, pos_mask),
+            (neg_batch, neg_mask),
+        )
+
+    def pretrain_loss(self, batch):
+        pass
 
 
 def gelu(x):
@@ -361,17 +501,18 @@ class Embeddings(nn.Module):
         super().__init__()
         self.tok_embed = nn.Embedding(cfg.vocab_size, cfg.dim)
         self.pos_embed = nn.Embedding(cfg.max_len, cfg.dim)
-        self.seg_embed = nn.Embedding(cfg.n_segments, cfg.dim)
 
         self.norm = LayerNorm(cfg)
         self.drop = nn.Dropout(cfg.p_drop_hidden)
 
-    def forward(self, x, seg):
-        seq_len = x.size(1)
-        pos = torch.arange(seq_len, dtype=torch.long, device=x.device)
-        pos = pos.unsqueeze(0).expand_as(x)  # (S,) -> (B, S)
+    def forward(self, x, pos=None):
+        if pos is None:
+            seq_len = x.size(-1)
+            pos = torch.arange(seq_len, dtype=torch.long, device=x.device)
+            if len(x.size()) > 1:
+                pos = pos.unsqueeze(0).expand_as(x)  # (S,) -> (B, S)
 
-        e = self.tok_embed(x) + self.pos_embed(pos) + self.seg_embed(seg)
+        e = self.tok_embed(x) + self.pos_embed(pos)
         return self.drop(self.norm(e))
 
 
@@ -463,7 +604,7 @@ class VAE(nn.Module):
 
     def dec(self, emb):
         es = emb.size(1)
-        mu, logvar = emb[:,:es // 2], emb[:,es // 2:]
+        mu, logvar = emb[:, :es // 2], emb[:, es // 2:]
         std = logvar.mul(0.5).exp_()
         eps = torch.empty(std.size()).float().normal_().to(device)
         z = eps.mul(std).add_(mu)
@@ -475,7 +616,7 @@ class VAE(nn.Module):
         else:
             out = self.dec(emb)
             es = emb.size(1)
-            mu, logvar = emb[:,:es // 2], emb[:,es // 2:]
+            mu, logvar = emb[:, :es // 2], emb[:, es // 2:]
 
         bce = self.recons_loss(out, item)
 
@@ -521,7 +662,7 @@ class ImageAE(VAE):
         return self._encoder(item).view(item.size(0), -1)
 
     def decoder(self, emb):
-        return self._decoder(emb.unsqueeze(-1).unsqueeze(-1))
+        return self._decoder(emb[:, :, None, None])
 
 
 class MetaAE(VAE):
