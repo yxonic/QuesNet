@@ -166,10 +166,12 @@ class Trainer:
                     y_pred[0], y_true[0])[0])
             }
 
-        result = list(self._eval(model, diff_ques, torch.nn.MSELoss(),
+        results = list(self._eval(model, diff_ques, torch.nn.MSELoss(),
                                  make_label, make_result, args))
+        if not results:
+            return
         self.write_result('%s_%s_%s' % (args.tag, str(args.checkpoint),
-                                        self.run_id), result)
+                                        self.run_id), results)
 
     def eval_know(self, args):
         know_ques = QuestionLoader('data/test/know_ques.txt', 'data/words.txt',
@@ -193,8 +195,14 @@ class Trainer:
             return rv
 
         def make_result(y_true, y_pred):
+            n_samples = y_true.size(0)
             y_true = y_true.view(-1).numpy()
-            y_pred = (y_pred > 0.5).view(-1).numpy()
+            y_pred_ = None
+            for thresh in [0.5, 0.4, 0.3, 0.2, 0.1, 0.05, 0.02, 0.01]:
+                y_pred_ = (torch.sigmoid(y_pred) > thresh).view(-1).numpy()
+                if y_pred_.sum() > 1.35 * n_samples:
+                    break
+            y_pred = y_pred_
             acc = metrics.accuracy_score(y_true, y_pred)
             p, r, f, _ = metrics.precision_recall_fscore_support(
                 y_true, y_pred, average='binary')
@@ -208,6 +216,8 @@ class Trainer:
         results = list(self._eval(model, know_ques,
                                   torch.nn.BCEWithLogitsLoss(),
                                   make_label, make_result, args))
+        if not results:
+            return
         self.write_result('%s_%s_%s' % (args.tag, str(args.checkpoint),
                                         self.run_id), results)
 
@@ -222,37 +232,42 @@ class Trainer:
         test_ques = train_ques.split_(args.split_ratio)
 
         last = None
-        for epoch in range(args.n_epochs):
-            train_iter = PrefetchIter(train_ques, batch_size=args.batch_size)
-            for qs in tqdm(train_iter):
-                batch = model[0].make_batch(qs)
-                labels = make_label(qs)
-                loss = loss_f(model(batch), labels)
-                optim.zero_grad()
-                loss.backward()
-                optim.step()
 
-            eval_iter = PrefetchIter(test_ques, shuffle=False,
-                                     batch_size=args.test_batch_size)
-            total_loss = 0.
-            y_true = []
-            y_pred = []
-            with torch.no_grad():
-                for qs in tqdm(eval_iter):
+        try:
+            for epoch in range(args.n_epochs):
+                train_iter = PrefetchIter(train_ques,
+                                          batch_size=args.batch_size)
+                for qs in tqdm(train_iter):
                     batch = model[0].make_batch(qs)
                     labels = make_label(qs)
-                    pred = model(batch)
-                    loss = loss_f(pred, labels)
-                    total_loss += loss.item()
-                    y_true.append(labels)
-                    y_pred.append(pred)
-            result = make_result(torch.cat(y_true, 0), torch.cat(y_pred, 0))
-            print(result)
-            yield result
-            if _better(result, last):
-                last = result
-            else:
-                break  # early stopping
+                    loss = loss_f(model(batch), labels)
+                    optim.zero_grad()
+                    loss.backward()
+                    optim.step()
+
+                test_iter = PrefetchIter(test_ques, shuffle=False,
+                                         batch_size=args.test_batch_size)
+                total_loss = 0.
+                y_true = []
+                y_pred = []
+                with torch.no_grad():
+                    for qs in tqdm(test_iter):
+                        batch = model[0].make_batch(qs)
+                        labels = make_label(qs)
+                        pred = model(batch)
+                        loss = loss_f(pred, labels)
+                        total_loss += loss.item()
+                        y_true.append(labels)
+                        y_pred.append(pred)
+                result = make_result(torch.cat(y_true, 0), torch.cat(y_pred, 0))
+                print(result)
+                yield result
+                if _better(result, last):
+                    last = result
+                else:
+                    break  # early stopping
+        except KeyboardInterrupt:
+            return
 
     def write_result(self, tag, result):
         ws: fret.Workspace = self.ws

@@ -179,9 +179,9 @@ class RNN(FeatureExtractor):
         h = self.init_h(packed.batch_sizes[0])
         y, h = self.rnn(PackedSequence(emb, packed.batch_sizes), h)
         if self.config['rnn'] == 'GRU':
-            return y, batch.invert(h, 1)
+            return y, batch.invert(h, 1).squeeze(0)
         else:
-            return y, batch.invert(h[0], 1)
+            return y, batch.invert(h[0], 1).squeeze(0)
 
     def pretrain_loss(self, batch):
         input, output = batch
@@ -308,9 +308,9 @@ class HRNN(FeatureExtractor):
         h = self.init_h(packed.batch_sizes[0])
         y, h = self.rnn(packed, h)
         if self.config['rnn'] == 'GRU':
-            return y, batch.invert(h, 1)
+            return y, batch.invert(h, 1).squeeze(0)
         else:
-            return y, batch.invert(h[0], 1)
+            return y, batch.invert(h[0], 1).squeeze(0)
 
     def pretrain_loss(self, batch):
         input, words, ims, metas, wmask, imask, mmask = batch

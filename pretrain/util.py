@@ -115,7 +115,7 @@ class lines:
             ls = []
             for i in range(low, high):
                 line = linecache.getline(self.filename, i + d)
-                if self.preserve_newline:
+                if not self.preserve_newline:
                     line = line.strip('\r\n')
                 ls.append(line)
 
