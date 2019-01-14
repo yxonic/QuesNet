@@ -50,11 +50,84 @@ class Predictor(nn.Module):
 
 
 class SP(nn.Module):
-    def __init__(self):
+    def __init__(self, feat_model, wcnt, emb_size=50, seq_h_size=50,
+                 n_layers=1, attn_k=10):
         super().__init__()
+        self.wcnt = wcnt
+        self.emb_size = emb_size
+        self.ques_h_size = feat_model.feat_size
+        self.seq_h_size = seq_h_size
+        self.n_layers = n_layers
+        self.attn_k = attn_k
 
-    def forward(self):
-        pass
+        self.question_net = feat_model
+
+        self.seq_net = EERNNSeqNet(self.ques_h_size, seq_h_size,
+                                   n_layers,attn_k)
+
+    def forward(self, question, score, hidden=None):
+        ques_h0 = None
+        batch = self.question_net.make_batch([question])
+        _, ques_h = self.question_net(batch)
+
+        s, h = self.seq_net(ques_h[0], score, hidden)
+
+        if hidden is None:
+            hidden = ques_h, h
+        else:
+            # concat all qs and hs for attention
+            qs, hs = hidden
+            qs = torch.cat([qs, ques_h])
+            hs = torch.cat([hs, h])
+            hidden = qs, hs
+
+        return s, hidden
+
+
+class EERNNSeqNet(nn.Module):
+    def __init__(self, ques_size=100, seq_hidden_size=50,
+                 n_layers=1, attn_k=10):
+        super(EERNNSeqNet, self).__init__()
+
+        self.initial_h = nn.Parameter(torch.zeros(n_layers *
+                                                  seq_hidden_size))
+        self.ques_size = ques_size  # exercise size
+        self.seq_hidden_size = seq_hidden_size
+        self.n_layers = n_layers
+        self.attn_k = attn_k
+
+        # initialize network
+        self.seq_net = nn.GRU(ques_size * 2, seq_hidden_size, n_layers)
+        self.score_net = nn.Linear(ques_size + seq_hidden_size, 1)
+
+    def forward(self, question, score, hidden):
+        if hidden is None:
+            h = self.initial_h.view(self.n_layers, 1, self.seq_hidden_size)
+            attn_h = self.initial_h
+        else:
+            questions, hs = hidden
+            h = hs[-1:]
+            alpha = torch.mm(questions, question.view(-1, 1)).view(-1)
+            alpha, idx = alpha.topk(min(len(alpha), self.attn_k), sorted=False)
+            alpha = nn.functional.softmax(alpha.view(1, -1), dim=-1)
+
+            # flatten each h
+            hs = hs.view(-1, self.n_layers * self.seq_hidden_size)
+            attn_h = torch.mm(alpha, torch.index_select(hs, 0, idx)).view(-1)
+
+        # prediction
+        pred_v = torch.cat([question, attn_h]).view(1, -1)
+        pred = self.score_net(pred_v)
+
+        if score is None:
+            score = pred.flatten()
+
+        # update seq_net
+        x = torch.cat([question * (score >= 0.5).float(),
+                       question * (score < 0.5).float()])
+
+        _, h_ = self.seq_net(x.view(1, 1, -1), h)
+        return pred, h_
 
 
 @fret.configurable
@@ -150,7 +223,7 @@ class HRNN(FeatureExtractor):
             self.load_emb(embs)
 
         self.ie = ImageAE(emb_size)
-        self.me = MetaAE(len(_stoi['area']), emb_size)
+        self.me = MetaAE(len(_stoi['grade']), emb_size)
 
         self.i_lambda = i_lambda
         self.m_lambda = m_lambda
@@ -175,8 +248,8 @@ class HRNN(FeatureExtractor):
         embs = []
         gt = []
         for q in data:
-            meta = torch.zeros(len(self.stoi['area'])).to(device)
-            meta[q.labels.get('area') or []] = 1
+            meta = torch.zeros(len(self.stoi['grade'])).to(device)
+            meta[q.labels.get('grade') or []] = 1
             _embs = [self.we(torch.tensor([0], device=device)),
                      self.me.enc(meta.unsqueeze(0))]
             _gt = [meta]
@@ -401,7 +474,7 @@ class QuesNet(BERT):
         self.vocab_size += 1
 
         self.ie = ImageAE(cfg.dim_ff)
-        self.me = MetaAE(len(self.stoi['area']), cfg.dim_ff)
+        self.me = MetaAE(len(self.stoi['grade']), cfg.dim_ff)
         self.woutput = nn.Linear(cfg.dim, self.vocab_size)
         self.ioutput = nn.Linear(cfg.dim, cfg.dim_ff)
         self.moutput = nn.Linear(cfg.dim, cfg.dim_ff)

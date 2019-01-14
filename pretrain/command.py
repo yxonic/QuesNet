@@ -1,10 +1,14 @@
 """Define commands."""
 import datetime
+import json
 import subprocess
 from functools import partial
 
+import numpy as np
+import sklearn.metrics as metrics
 import fret
 import torch
+from scipy import stats
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
@@ -24,7 +28,7 @@ def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, lr=0.1,
 
 
 @fret.command
-def eval(ws, diff=False, know=False, sp=False, checkpoint=None,
+def eval(ws, diff=False, know=False, sp=False, checkpoint=None, tag='test',
          split_ratio=0.8, n_epochs=5, batch_size=16, test_batch_size=32):
     """Use feature extraction model for each evaluation task"""
     trainer = Trainer(ws)
@@ -59,7 +63,7 @@ class Trainer:
         logger = self.ws.logger('pretrain')
 
         ques = QuestionLoader('data/train/ques.txt', 'data/words.txt',
-                              'data/imgs', 'data/train/id_area.txt')
+                              'data/imgs', 'data/train/id_grade.txt')
         self.model = self.make_model(_stoi=ques.stoi).to(device)
 
         ques.pipeline = partial(self.model.make_batch, pretrain=True)
@@ -139,7 +143,7 @@ class Trainer:
         logger = self.ws.logger('eval')
 
         diff_ques = QuestionLoader('data/test/diff_ques.txt', 'data/words.txt',
-                                   'data/imgs', 'data/test/id_area.txt',
+                                   'data/imgs', 'data/test/id_grade.txt',
                                    'data/test/id_difficulty.txt')
         self.model: FeatureExtractor = self.make_model(_stoi=diff_ques.stoi)
         if args.checkpoint is not None:
@@ -148,14 +152,28 @@ class Trainer:
             self.model, Predictor(self.model.feat_size, 1)).to(device)
 
         def make_label(qs):
-            labels = [q.labels['difficulty'] for q in qs]
+            labels = [[q.labels['difficulty']] for q in qs]
             return torch.tensor(labels).to(device)
 
-        self._eval(model, diff_ques, make_label, torch.nn.MSELoss(), args)
+        def make_result(y_pred, y_true):
+            y_pred = y_pred.view(1, -1).numpy()
+            y_true = y_true.view(1, -1).numpy()
+
+            return {
+                'diff/mae-': float(np.abs(y_pred - y_true).mean()),
+                'diff/rmse-': float(np.sqrt(((y_pred - y_true) ** 2).mean())),
+                'diff/pearsonr+': float(stats.pearsonr(
+                    y_pred[0], y_true[0])[0])
+            }
+
+        result = list(self._eval(model, diff_ques, torch.nn.MSELoss(),
+                                 make_label, make_result, args))
+        self.write_result('%s_%s_%s' % (args.tag, str(args.checkpoint),
+                                        self.run_id), result)
 
     def eval_know(self, args):
         know_ques = QuestionLoader('data/test/know_ques.txt', 'data/words.txt',
-                                   'data/imgs', 'data/test/id_area.txt',
+                                   'data/imgs', 'data/test/id_grade.txt',
                                    'data/test/id_know.txt')
         know_size = len(know_ques.stoi['know'])
 
@@ -174,20 +192,36 @@ class Trainer:
                 rv[i, labels[i]] = 1
             return rv
 
-        self._eval(model, know_ques, make_label,
-                   torch.nn.BCEWithLogitsLoss(), args)
+        def make_result(y_true, y_pred):
+            y_true = y_true.view(-1).numpy()
+            y_pred = (y_pred > 0.5).view(-1).numpy()
+            acc = metrics.accuracy_score(y_true, y_pred)
+            p, r, f, _ = metrics.precision_recall_fscore_support(
+                y_true, y_pred, average='binary')
+            return {
+                'know/accuracy+': float(acc),
+                'know/precision+': float(p),
+                'know/recall+': float(r),
+                'know/f1+': float(f)
+            }
+
+        results = list(self._eval(model, know_ques,
+                                  torch.nn.BCEWithLogitsLoss(),
+                                  make_label, make_result, args))
+        self.write_result('%s_%s_%s' % (args.tag, str(args.checkpoint),
+                                        self.run_id), results)
 
     def eval_sp(self, args):
         pass
 
-    def _eval(self, model, ques, make_label, loss_f, args):
+    def _eval(self, model, ques, loss_f, make_label, make_result, args):
         self.model = model
         optim = self.optimizer(model)
 
         train_ques = ques
         test_ques = train_ques.split_(args.split_ratio)
 
-        last = 1e9
+        last = None
         for epoch in range(args.n_epochs):
             train_iter = PrefetchIter(train_ques, batch_size=args.batch_size)
             for qs in tqdm(train_iter):
@@ -201,26 +235,31 @@ class Trainer:
             eval_iter = PrefetchIter(test_ques, shuffle=False,
                                      batch_size=args.test_batch_size)
             total_loss = 0.
+            y_true = []
+            y_pred = []
             with torch.no_grad():
                 for qs in tqdm(eval_iter):
                     batch = model[0].make_batch(qs)
                     labels = make_label(qs)
-                    loss = loss_f(model(batch), labels)
+                    pred = model(batch)
+                    loss = loss_f(pred, labels)
                     total_loss += loss.item()
-            current = total_loss / len(eval_iter)
-            print(current)
-            if current < last:
-                last = current
+                    y_true.append(labels)
+                    y_pred.append(pred)
+            result = make_result(torch.cat(y_true, 0), torch.cat(y_pred, 0))
+            print(result)
+            yield result
+            if _better(result, last):
+                last = result
             else:
                 break  # early stopping
 
-        print(last)
-
-    def _write_result(self, result):
-        pass
-
-    def result(self):
-        pass
+    def write_result(self, tag, result):
+        ws: fret.Workspace = self.ws
+        json.dump(result,
+                  (ws.result_path /
+                   (tag + '_' + self.run_id + '.json')).open('w'),
+                  indent=4)
 
     def state_dict(self):
         return {
@@ -257,3 +296,29 @@ class Trainer:
         self.model.load_state_dict(
             torch.load(cp_path.open('rb'), map_location=lambda s, _: s)
         )
+
+
+def _better(r1, r2):
+    if r1 is None:
+        return False
+    if r2 is None:
+        return True
+    rv = []
+    for k in r1:
+        if k.endswith('+'):
+            rv.append(r1[k] > r2[k])
+        else:
+            rv.append(r1[k] < r2[k])
+    return np.mean(rv) >= 0.5
+
+
+class _result_key:
+    def __init__(self, r):
+        self.r = r
+
+    def __cmp__(self, other):
+        if _better(self.r, other.r):
+            return 1
+        if _better(other.r, self.r):
+            return -1
+        return 0
