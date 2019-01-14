@@ -37,17 +37,21 @@ class FeatureExtractor(nn.Module):
         raise NotImplementedError
 
 
-class Predictor:
-    def __init__(self, out_dim):
-        pass
+class Predictor(nn.Module):
+    def __init__(self, feat_size, out_dim):
+        super().__init__()
+        self.model = nn.Sequential(
+            nn.Linear(feat_size, feat_size),
+            nn.ReLU(True),
+            nn.Linear(feat_size, out_dim))
 
     def forward(self, features):
-        pass
+        return self.model(features[1])
 
 
-class SP:
+class SP(nn.Module):
     def __init__(self):
-        pass
+        super().__init__()
 
     def forward(self):
         pass
@@ -331,7 +335,7 @@ class BERT(FeatureExtractor):
         if not pretrain:
             return SeqBatch([self.embed(torch.tensor(q).long().to(device))
                              for q in qs], device=device).padded(
-                max_len=self.max_len, batch_first=True)[0]
+                max_len=self.max_len, batch_first=True)
 
         masks = []
         target = []

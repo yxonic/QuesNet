@@ -4,6 +4,7 @@ level vectors."""
 import os
 from collections import namedtuple
 from pathlib import Path
+from copy import copy
 
 import numpy as np
 from PIL import Image
@@ -17,12 +18,13 @@ Question = namedtuple('Question',
 
 class QuestionLoader:
     def __init__(self, ques_file, word_file, img_dir,
-                 *label_file, pipeline=None):
+                 *label_file, pipeline=None, range=None):
         """Read question file as data list. Same behavior on same file."""
+        self.range = None
         self.ques = lines(ques_file, skip=1)
+        self.range = range or slice(0, len(self), 1)
         self.img_dir = img_dir
         self.labels = []
-
         self.itos = dict()
         self.stoi = dict()
         self.itos['word'] = lines(word_file)
@@ -45,10 +47,24 @@ class QuestionLoader:
 
         self.pipeline = pipeline
 
+    def split_(self, split_ratio):
+        first_size = int(len(self) * split_ratio)
+        other = copy(self)
+        self.range = slice(0, first_size, 1)
+        other.range = slice(first_size, len(other), 1)
+        return other
+
     def __len__(self):
-        return len(self.ques)
+        return len(self.ques) if self.range is None \
+            else self.range.stop - self.range.start
 
     def __getitem__(self, item):
+        if isinstance(item, int):
+            item += self.range.start
+            item = slice(item, item + 1, 1)
+        else:
+            item = slice(item.start + self.range.start,
+                         item.stop + self.range.start, 1)
         qs = []
         for line in self.ques[item]:
             fields = line.split('\t')

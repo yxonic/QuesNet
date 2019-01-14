@@ -128,7 +128,7 @@ class lines:
 class PrefetchIter:
     """Iterator on data and labels, with states for save and restore."""
 
-    def __init__(self, data, *label, length=None, batch_size=1):
+    def __init__(self, data, *label, length=None, batch_size=1, shuffle=True):
         self.data = data
         self.label = label
         self.batch_size = batch_size
@@ -139,7 +139,8 @@ class PrefetchIter:
             'data and label must have same lengths'
 
         self.index = list(range(len(self)))
-        random.shuffle(self.index)
+        if shuffle:
+            random.shuffle(self.index)
         self.thread = None
         self.pos = 0
 

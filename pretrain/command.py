@@ -10,6 +10,7 @@ from tqdm import tqdm
 
 from . import device
 from .dataloader import QuestionLoader
+from .module import FeatureExtractor, Predictor, SP
 from .util import stateful, critical, PrefetchIter
 
 
@@ -23,10 +24,16 @@ def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, lr=0.1,
 
 
 @fret.command
-def eval(ws):
+def eval(ws, diff=False, know=False, sp=False, checkpoint=None,
+         split_ratio=0.8, n_epochs=5, batch_size=16, test_batch_size=32):
     """Use feature extraction model for each evaluation task"""
     trainer = Trainer(ws)
-    trainer.eval(eval.args)
+    if diff:
+        trainer.eval_diff(eval.args)
+    if know:
+        trainer.eval_know(eval.args)
+    if sp:
+        trainer.eval_sp(eval.args)
 
 
 @fret.command
@@ -99,7 +106,7 @@ class Trainer:
                     if args.save_every > 0 and i % args.save_every == 0:
                         self.save('%d.%d' % (self.epoch, i))
 
-                self.save('%d' % self.epoch)
+                self.save('%d' % (self.epoch + 1))
 
             except KeyboardInterrupt:
                 self.save_state()
@@ -128,10 +135,91 @@ class Trainer:
         else:
             return self._cur_optim
 
-    def eval(self, args):
-        pass
+    def eval_diff(self, args):
+        logger = self.ws.logger('eval')
+
+        diff_ques = QuestionLoader('data/test/diff_ques.txt', 'data/words.txt',
+                                   'data/imgs', 'data/test/id_area.txt',
+                                   'data/test/id_difficulty.txt')
+        self.model: FeatureExtractor = self.make_model(_stoi=diff_ques.stoi)
+        if args.checkpoint is not None:
+            self.load(args.checkpoint)
+        model = torch.nn.Sequential(
+            self.model, Predictor(self.model.feat_size, 1)).to(device)
+
+        def make_label(qs):
+            labels = [q.labels['difficulty'] for q in qs]
+            return torch.tensor(labels).to(device)
+
+        self._eval(model, diff_ques, make_label, torch.nn.MSELoss(), args)
+
+    def eval_know(self, args):
+        know_ques = QuestionLoader('data/test/know_ques.txt', 'data/words.txt',
+                                   'data/imgs', 'data/test/id_area.txt',
+                                   'data/test/id_know.txt')
+        know_size = len(know_ques.stoi['know'])
+
+        self.model: FeatureExtractor = self.make_model(_stoi=know_ques.stoi)
+        if args.checkpoint is not None:
+            self.load(args.checkpoint)
+
+        model = torch.nn.Sequential(
+            self.model,
+            Predictor(self.model.feat_size, know_size)).to(device)
+
+        def make_label(qs):
+            labels = [q.labels['know'] for q in qs]
+            rv = torch.zeros(len(labels), know_size).to(device)
+            for i in range(len(labels)):
+                rv[i, labels[i]] = 1
+            return rv
+
+        self._eval(model, know_ques, make_label,
+                   torch.nn.BCEWithLogitsLoss(), args)
 
     def eval_sp(self, args):
+        pass
+
+    def _eval(self, model, ques, make_label, loss_f, args):
+        self.model = model
+        optim = self.optimizer(model)
+
+        train_ques = ques
+        test_ques = train_ques.split_(args.split_ratio)
+
+        last = 1e9
+        for epoch in range(args.n_epochs):
+            train_iter = PrefetchIter(train_ques, batch_size=args.batch_size)
+            for qs in tqdm(train_iter):
+                batch = model[0].make_batch(qs)
+                labels = make_label(qs)
+                loss = loss_f(model(batch), labels)
+                optim.zero_grad()
+                loss.backward()
+                optim.step()
+
+            eval_iter = PrefetchIter(test_ques, shuffle=False,
+                                     batch_size=args.test_batch_size)
+            total_loss = 0.
+            with torch.no_grad():
+                for qs in tqdm(eval_iter):
+                    batch = model[0].make_batch(qs)
+                    labels = make_label(qs)
+                    loss = loss_f(model(batch), labels)
+                    total_loss += loss.item()
+            current = total_loss / len(eval_iter)
+            print(current)
+            if current < last:
+                last = current
+            else:
+                break  # early stopping
+
+        print(last)
+
+    def _write_result(self, result):
+        pass
+
+    def result(self):
         pass
 
     def state_dict(self):
