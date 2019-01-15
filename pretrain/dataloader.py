@@ -58,13 +58,13 @@ class QuestionLoader:
         return len(self.ques) if self.range is None \
             else self.range.stop - self.range.start
 
-    def __getitem__(self, item):
-        if isinstance(item, int):
-            item += self.range.start
-            item = slice(item, item + 1, 1)
+    def __getitem__(self, x):
+        if isinstance(x, int):
+            x += self.range.start
+            item = slice(x, x + 1, 1)
         else:
-            item = slice(item.start + self.range.start,
-                         item.stop + self.range.start, 1)
+            item = slice(x.start + self.range.start,
+                         x.stop + self.range.start, 1)
         qs = []
         for line in self.ques[item]:
             fields = line.split('\t')
@@ -106,7 +106,9 @@ class QuestionLoader:
             qs.append(Question(qid, content, answer, false_options, labels))
 
         if callable(self.pipeline):
-            return self.pipeline(qs)
+            qs = self.pipeline(qs)
+        if isinstance(x, int):
+            return qs[0]
         else:
             return qs
 

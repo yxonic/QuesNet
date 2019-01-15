@@ -48,7 +48,7 @@ class BertAdam(Optimizer):
         max_grad_norm: Maximum norm for the gradients (-1 means no clipping).
                        Default: 1.0
     """
-    def __init__(self, params, lr, warmup=-1, t_total=-1,
+    def __init__(self, params, lr=0.1, warmup=-1, t_total=-1,
                  schedule='warmup_linear', b1=0.9, b2=0.999, e=1e-6,
                  weight_decay_rate=0.01, max_grad_norm=1.0):
         assert lr > 0.0, "Learning rate: %f - should be > 0.0" % lr

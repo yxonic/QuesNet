@@ -46,30 +46,24 @@ class Predictor(nn.Module):
             nn.Linear(feat_size, out_dim))
 
     def forward(self, features):
-        return self.model(features[1])
+        return self.model(features)
 
 
 class SP(nn.Module):
-    def __init__(self, feat_model, wcnt, emb_size=50, seq_h_size=50,
+    def __init__(self, feat_size, wcnt, emb_size=50, seq_h_size=50,
                  n_layers=1, attn_k=10):
         super().__init__()
         self.wcnt = wcnt
         self.emb_size = emb_size
-        self.ques_h_size = feat_model.feat_size
+        self.ques_h_size = feat_size
         self.seq_h_size = seq_h_size
         self.n_layers = n_layers
         self.attn_k = attn_k
 
-        self.question_net = feat_model
-
         self.seq_net = EERNNSeqNet(self.ques_h_size, seq_h_size,
                                    n_layers,attn_k)
 
-    def forward(self, question, score, hidden=None):
-        ques_h0 = None
-        batch = self.question_net.make_batch([question])
-        _, ques_h = self.question_net(batch)
-
+    def forward(self, ques_h, score, hidden=None):
         s, h = self.seq_net(ques_h[0], score, hidden)
 
         if hidden is None:
@@ -117,10 +111,10 @@ class EERNNSeqNet(nn.Module):
 
         # prediction
         pred_v = torch.cat([question, attn_h]).view(1, -1)
-        pred = self.score_net(pred_v)
+        pred = self.score_net(pred_v)[0]
 
         if score is None:
-            score = pred.flatten()
+            score = pred
 
         # update seq_net
         x = torch.cat([question * (score >= 0.5).float(),
@@ -284,7 +278,7 @@ class HRNN(FeatureExtractor):
                 if v.size() == torch.Size([1]):  # word
                     words.append((v, ind))
                     wmask[ind] = 1
-                elif len(v.size()) == 1:  # meta
+                elif v.dim() == 1:  # meta
                     metas.append((v.unsqueeze(0), ind))
                     mmask[ind] = 1
                 else:  # img
@@ -398,8 +392,7 @@ class BERT(FeatureExtractor):
         self.decoder.weight = embed_weight
         self.decoder_bias = nn.Parameter(torch.zeros(n_vocab))
 
-    def get_optimizer(self, **kwargs):
-        return BertAdam(self.parameters(), **kwargs)
+        self.optim_cls = BertAdam
 
     def make_batch(self, data, pretrain=False):
         qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
