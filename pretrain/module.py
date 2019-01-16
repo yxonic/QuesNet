@@ -64,7 +64,7 @@ class SP(nn.Module):
                                    n_layers,attn_k)
 
     def forward(self, ques_h, score, hidden=None):
-        s, h = self.seq_net(ques_h[0], score, hidden)
+        s, h = self.seq_net(ques_h, score, hidden)
 
         if hidden is None:
             hidden = ques_h, h

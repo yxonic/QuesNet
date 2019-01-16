@@ -279,16 +279,24 @@ class Trainer:
             for epoch in range(args.n_epochs):
                 for line in tqdm(lines('data/test/records.txt')):
                     loss = 0.
-                    rec = line.strip().split(' ')
-                    random.shuffle(rec)
-                    for r in rec:
+                    line = line.strip().split(' ')
+                    n = len(line)
+                    random.shuffle(line)
+                    qs = []
+                    ss = []
+                    for r in line:
                         qid, s = r.split(',')
-                        s = torch.tensor([float(s)]).to(device)
                         q = diff_ques[id_ind[qid]]
-                        qh = self.model(self.model.make_batch([q]))[1]
+                        qs.append(q)
+                        s = torch.tensor([float(s)]).to(device)
+                        ss.append(s)
+                    qs = self.model(self.model.make_batch(qs))[1]
+                    for i in range(n):
+                        q = qs[i]
+                        s = ss[i]
                         if args.fix:
-                            qh = qh.detach()
-                        s_pred, _ = sp_model(qh, torch.tensor([0]))
+                            q = q.detach()
+                        s_pred, _ = sp_model(q, s)
                         loss += loss_f(s_pred, s)
 
                     if not args.fix:
@@ -303,24 +311,32 @@ class Trainer:
                     true = []
                     pred = []
                     for line in tqdm(lines('data/test/test_records.txt')):
-                        for i, r in enumerate(line.strip().split(' ')):
+                        line = line.strip().split(' ')
+                        n = len(line)
+                        random.shuffle(line)
+                        qs = []
+                        ss = []
+                        for r in line:
                             qid, s = r.split(',')
-                            s = torch.tensor([float(s)]).to(device)
                             q = diff_ques[id_ind[qid]]
-                            qh = self.model(self.model.make_batch([q]))[1]
-                            s_pred, _ = sp_model(qh, torch.tensor([0]))
+                            qs.append(q)
+                            s = torch.tensor([float(s)]).to(device)
+                            ss.append(s)
+                        qs = self.model(self.model.make_batch(qs))[1]
+                        for i in range(n):
+                            s_pred, _ = sp_model(qs[i], ss[i])
                             if i > 20:
-                                true.append(s[0].item())
+                                true.append(ss[i][0].item())
                                 pred.append(s_pred[0].item())
                     y_pred = np.asarray(pred)
                     y_true = np.asarray(true)
                     p, r, f, _ = metrics.precision_recall_fscore_support(
                         y_true > 0.5, y_pred > 0.5, average='binary')
                     result = {
-                        'diff/mae-': float(np.abs(y_pred - y_true).mean()),
-                        'diff/rmse-': float(
+                        'sp/mae-': float(np.abs(y_pred - y_true).mean()),
+                        'sp/rmse-': float(
                             np.sqrt(((y_pred - y_true) ** 2).mean())),
-                        'know/f1+': float(f)
+                        'sp/f1+': float(f)
                     }
                     print(result)
                     results.append(result)
