@@ -193,10 +193,7 @@ class SeqBatch:
         self.dtype = dtype
         self.device = device
         self.seqs = seqs
-        if isinstance(seqs[0], torch.Tensor):
-            self.lens = [x.size(0) for x in seqs]
-        else:
-            self.lens = [len(x) for x in seqs]
+        self.lens = [len(x) for x in seqs]
 
         self.ind = argsort(self.lens)[::-1]
         self.inv = argsort(self.ind)
@@ -222,6 +219,7 @@ class SeqBatch:
                 for s in self.seqs]
         if max_len is None:
             max_len = self.lens[0]
+        seqs = [s[:max_len] for s in seqs]
         mask = [[1] * len(s) + [0] * (max_len - len(s)) for s in seqs]
 
         max_size = seqs[0].size()

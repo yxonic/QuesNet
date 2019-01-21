@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 from . import device
 from .dataloader import QuestionLoader
-from .module import FeatureExtractor, Predictor, SP
+from .module import FeatureExtractor, SP
 from .util import stateful, critical, PrefetchIter, lines
 
 
@@ -151,7 +151,7 @@ class Trainer:
         self.model.to(device)
         if args.checkpoint is not None:
             self.load(args.checkpoint)
-        model = Predictor(self.model.feat_size, 1).to(device)
+        model = torch.nn.Linear(self.model.feat_size, 1).to(device)
 
         def make_label(qs):
             labels = [[q.labels['difficulty']] for q in qs]
@@ -187,7 +187,7 @@ class Trainer:
         if args.checkpoint is not None:
             self.load(args.checkpoint)
 
-        model = Predictor(self.model.feat_size, know_size).to(device)
+        model = torch.nn.Linear(self.model.feat_size, know_size).to(device)
 
         def make_label(qs):
             labels = [q.labels['know'] for q in qs]
@@ -268,6 +268,8 @@ class Trainer:
         if args.checkpoint is not None:
             self.load(args.checkpoint)
 
+        diff_ques.pipeline = self.model.make_batch
+
         sp_model = SP(self.model.feat_size, len(diff_ques.stoi['word']))
         sp_model.to(device)
         q_optim = self.optimizer(self.model)
@@ -277,6 +279,7 @@ class Trainer:
         results = []
         try:
             for epoch in range(args.n_epochs):
+                self.model.train()
                 for line in tqdm(lines('data/test/records.txt')):
                     loss = 0.
                     line = line.strip().split(' ')
@@ -290,7 +293,7 @@ class Trainer:
                         qs.append(q)
                         s = torch.tensor([float(s)]).to(device)
                         ss.append(s)
-                    qs = self.model(self.model.make_batch(qs))[1]
+                    qs = self.model(qs)[1]
                     for i in range(n):
                         q = qs[i]
                         s = ss[i]
@@ -307,6 +310,7 @@ class Trainer:
                         q_optim.step()
                     optim.step()
 
+                self.model.eval()
                 with torch.no_grad():
                     true = []
                     pred = []
@@ -322,7 +326,7 @@ class Trainer:
                             qs.append(q)
                             s = torch.tensor([float(s)]).to(device)
                             ss.append(s)
-                        qs = self.model(self.model.make_batch(qs))[1]
+                        qs = self.model(qs)[1]
                         for i in range(n):
                             s_pred, _ = sp_model(qs[i], ss[i])
                             if i > 20:
@@ -360,10 +364,10 @@ class Trainer:
             for epoch in range(args.n_epochs):
                 train_iter = PrefetchIter(train_ques,
                                           batch_size=args.batch_size)
+                ques_model.train()
                 for qs in tqdm(train_iter):
-                    batch = ques_model.make_batch(qs)
                     labels = make_label(qs)
-                    h = ques_model(batch)[1]
+                    h = ques_model(ques_model.make_batch(qs))[1]
                     if args.fix:
                         h = h.detach()
                     loss = loss_f(model(h), labels)
@@ -377,14 +381,14 @@ class Trainer:
 
                 test_iter = PrefetchIter(test_ques, shuffle=False,
                                          batch_size=args.test_batch_size)
+                ques_model.eval()
                 total_loss = 0.
                 y_true = []
                 y_pred = []
                 with torch.no_grad():
                     for qs in tqdm(test_iter):
-                        batch = ques_model.make_batch(qs)
                         labels = make_label(qs)
-                        pred = model(ques_model(batch)[1])
+                        pred = model(ques_model(ques_model.make_batch(qs))[1])
                         loss = loss_f(pred, labels)
                         total_loss += loss.item()
                         y_true.append(labels)
