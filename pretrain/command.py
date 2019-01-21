@@ -29,7 +29,7 @@ def pretrain(ws, n_epochs=5, batch_size=8, save_every=5000, lr=0.1,
 
 
 @fret.command
-def eval(ws, diff=False, know=False, sp=False,
+def eval(ws, diff=False, know=False, sp=False, eval_every=-1,
          checkpoint=None, tag='test', early_stop=False, fix=False,
          split_ratio=0.8, n_epochs=5, batch_size=16, test_batch_size=32):
     """Use feature extraction model for each evaluation task"""
@@ -158,14 +158,17 @@ class Trainer:
             return torch.tensor(labels).to(device)
 
         def make_result(y_pred, y_true):
-            y_pred = y_pred.view(1, -1).numpy()
-            y_true = y_true.view(1, -1).numpy()
+            y_pred = y_pred.view(-1).numpy()
+            y_true = y_true.view(-1).numpy()
+            y_pred, y_true = zip(*sorted(zip(y_pred, y_true)))
+            y_pred = np.asarray(y_pred)
+            y_true = np.asarray(y_true)
 
             return {
                 'diff/mae-': float(np.abs(y_pred - y_true).mean()),
                 'diff/rmse-': float(np.sqrt(((y_pred - y_true) ** 2).mean())),
-                'diff/pearsonr+': float(stats.pearsonr(
-                    y_pred[0], y_true[0])[0])
+                'diff/auc+': float(metrics.auc(y_pred, y_true)),
+                'diff/pearsonr+': float(stats.pearsonr(y_pred, y_true)[0])
             }
 
         results = list(self._eval(self.model, model, diff_ques,
@@ -200,6 +203,7 @@ class Trainer:
             n_samples = y_true.size(0)
             y_true = y_true.view(-1).numpy()
 
+            # find best threshold for f1
             l = 0.
             lo = 0.382
             hi = 0.618
@@ -276,11 +280,14 @@ class Trainer:
         optim = self.optimizer(sp_model)
         loss_f = torch.nn.MSELoss()
 
+        self.model.train()
+        sp_model.train()
+
         results = []
         try:
+            records = lines('data/test/records.txt')
             for epoch in range(args.n_epochs):
-                self.model.train()
-                for line in tqdm(lines('data/test/records.txt')):
+                for lineno, line in tqdm(enumerate(records)):
                     loss = 0.
                     line = line.strip().split(' ')
                     n = len(line)
@@ -310,40 +317,61 @@ class Trainer:
                         q_optim.step()
                     optim.step()
 
-                self.model.eval()
-                with torch.no_grad():
-                    true = []
-                    pred = []
-                    for line in tqdm(lines('data/test/test_records.txt')):
-                        line = line.strip().split(' ')
-                        n = len(line)
-                        random.shuffle(line)
-                        qs = []
-                        ss = []
-                        for r in line:
-                            qid, s = r.split(',')
-                            q = diff_ques[id_ind[qid]]
-                            qs.append(q)
-                            s = torch.tensor([float(s)]).to(device)
-                            ss.append(s)
-                        qs = self.model(qs)[1]
-                        for i in range(n):
-                            s_pred, _ = sp_model(qs[i], ss[i])
-                            if i > 20:
-                                true.append(ss[i][0].item())
-                                pred.append(s_pred[0].item())
-                    y_pred = np.asarray(pred)
-                    y_true = np.asarray(true)
-                    p, r, f, _ = metrics.precision_recall_fscore_support(
-                        y_true > 0.5, y_pred > 0.5, average='binary')
-                    result = {
-                        'sp/mae-': float(np.abs(y_pred - y_true).mean()),
-                        'sp/rmse-': float(
-                            np.sqrt(((y_pred - y_true) ** 2).mean())),
-                        'sp/f1+': float(f)
-                    }
-                    print(result)
-                    results.append(result)
+                    if (args.eval_every > 0 and
+                        lineno % args.eval_every == 0) or \
+                            lineno == len(records) - 1:
+                        self.model.eval()
+                        sp_model.eval()
+                        with torch.no_grad():
+                            true = []
+                            pred = []
+                            # we calculate auc on each user then average
+                            aucs = []
+                            for _line in tqdm(
+                                    lines('data/test/test_records.txt')):
+                                _line = _line.strip().split(' ')
+                                n = len(_line)
+                                random.shuffle(_line)
+                                qs = []
+                                ss = []
+                                for r in _line:
+                                    qid, s = r.split(',')
+                                    q = diff_ques[id_ind[qid]]
+                                    qs.append(q)
+                                    s = torch.tensor([float(s)]).to(device)
+                                    ss.append(s)
+                                qs = self.model(qs)[1]
+                                _true = []
+                                _pred = []
+                                for i in range(n):
+                                    s_pred, _ = sp_model(qs[i], ss[i])
+                                    if i > 20:
+                                        _true.append(ss[i][0].item())
+                                        _pred.append(s_pred[0].item())
+                                _true, _pred = zip(*sorted(zip(_true, _pred)))
+                                aucs.append(metrics.auc(_true, _pred))
+                                true.extend(_true)
+                                pred.extend(_pred)
+                            y_pred = np.asarray(pred)
+                            y_true = np.asarray(true)
+                            p, r, f, _ = \
+                                metrics.precision_recall_fscore_support(
+                                    y_true > 0.5, y_pred > 0.5,
+                                    average='binary'
+                                )
+                            result = {
+                                'sp/mae-': float(
+                                    np.abs(y_pred - y_true).mean()),
+                                'sp/rmse-': float(
+                                    np.sqrt(((y_pred - y_true) ** 2).mean())),
+                                'sp/f1+': float(f),
+                                'sp/auc+': float(np.mean(aucs))
+                            }
+                            print(result)
+                            results.append(result)
+                        self.model.train()
+                        sp_model.train()
+
         except KeyboardInterrupt:
             pass
 
@@ -362,9 +390,11 @@ class Trainer:
 
         try:
             for epoch in range(args.n_epochs):
+                # training
                 train_iter = PrefetchIter(train_ques,
                                           batch_size=args.batch_size)
                 ques_model.train()
+                model.train()
                 for qs in tqdm(train_iter):
                     labels = make_label(qs)
                     h = ques_model(ques_model.make_batch(qs))[1]
@@ -379,9 +409,11 @@ class Trainer:
                         q_optim.step()
                     optim.step()
 
+                # evaluating
                 test_iter = PrefetchIter(test_ques, shuffle=False,
                                          batch_size=args.test_batch_size)
                 ques_model.eval()
+                model.eval()
                 total_loss = 0.
                 y_true = []
                 y_pred = []
@@ -413,7 +445,9 @@ class Trainer:
                         b = True
                 if not b and epoch > 5:
                     break
+
         except KeyboardInterrupt:
+            self.ws.logger('eval').warning('KeyboardInterrupt received')
             return
 
     def write_result(self, tag, result):
