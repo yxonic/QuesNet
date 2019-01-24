@@ -48,7 +48,7 @@ class QuestionLoader:
         self.pipeline = pipeline
 
     def split_(self, split_ratio):
-        first_size = int(len(self) * split_ratio)
+        first_size = int(len(self) * (1 - split_ratio))
         other = copy(self)
         self.range = slice(0, first_size, 1)
         other.range = slice(first_size, len(other), 1)

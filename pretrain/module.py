@@ -68,8 +68,7 @@ class SP(nn.Module):
 
 
 class EERNNSeqNet(nn.Module):
-    def __init__(self, ques_size=100, seq_hidden_size=50,
-                 n_layers=1, attn_k=10):
+    def __init__(self, ques_size, seq_hidden_size, n_layers, attn_k):
         super(EERNNSeqNet, self).__init__()
 
         self.initial_h = nn.Parameter(torch.zeros(n_layers *
@@ -338,10 +337,6 @@ class HRNN(FeatureExtractor):
             return self.h0.expand(size), self.c0.expand(size)
 
 
-class ELMo:
-    pass
-
-
 @fret.configurable
 class BERT(FeatureExtractor):
     """ Transformer with Self-Attentive Blocks"""
@@ -448,9 +443,9 @@ class BERT(FeatureExtractor):
 
 
 @fret.configurable
-class QuesNet(BERT):
+class HBERT(BERT):
     def __init__(self, **kwargs):
-        super(QuesNet, self).__init__(**kwargs)
+        super(HBERT, self).__init__(**kwargs)
         cfg = self.config
 
         self.stoi['word']['<sep>'] = self.vocab_size
@@ -1020,7 +1015,7 @@ class BertPreTrainingHeads(nn.Module):
 
 
 @fret.configurable
-class BertModel(FeatureExtractor):
+class BertAlt(FeatureExtractor):
     """BERT model ("Bidirectional Embedding Representations from a Transformer").
     Params:
         config: a BertConfig class instance with the configuration to build a new model
@@ -1068,7 +1063,7 @@ class BertModel(FeatureExtractor):
                  max_position_embeddings=512,
                  type_vocab_size=2,
                  initializer_range=0.02, **cfg):
-        super(BertModel, self).__init__(**cfg)
+        super(BertAlt, self).__init__(**cfg)
         config = self.config
         self.stoi = _stoi
         config['hidden_size'] = self.feat_size

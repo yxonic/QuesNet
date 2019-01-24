@@ -272,8 +272,6 @@ class Trainer:
         if args.checkpoint is not None:
             self.load(args.checkpoint)
 
-        diff_ques.pipeline = self.model.make_batch
-
         sp_model = SP(self.model.feat_size, len(diff_ques.stoi['word']))
         sp_model.to(device)
         q_optim = self.optimizer(self.model)
@@ -287,7 +285,7 @@ class Trainer:
         try:
             records = lines('data/test/records.txt')
             for epoch in range(args.n_epochs):
-                for lineno, line in tqdm(enumerate(records)):
+                for lineno, line in enumerate(tqdm(records)):
                     loss = 0.
                     line = line.strip().split(' ')
                     n = len(line)
@@ -300,12 +298,12 @@ class Trainer:
                         qs.append(q)
                         s = torch.tensor([float(s)]).to(device)
                         ss.append(s)
-                    qs = self.model(qs)[1]
+                    qs = self.model(self.model.make_batch(qs))[1]
+                    if args.fix:
+                        qs = qs.detach()
                     for i in range(n):
                         q = qs[i]
                         s = ss[i]
-                        if args.fix:
-                            q = q.detach()
                         s_pred, _ = sp_model(q, s)
                         loss += loss_f(s_pred, s)
 
@@ -338,9 +336,10 @@ class Trainer:
                                     qid, s = r.split(',')
                                     q = diff_ques[id_ind[qid]]
                                     qs.append(q)
-                                    s = torch.tensor([float(s)]).to(device)
+                                    s = torch.tensor(
+                                        [float(s) > 0.5]).float().to(device)
                                     ss.append(s)
-                                qs = self.model(qs)[1]
+                                qs = self.model(self.model.make_batch(qs))[1]
                                 _true = []
                                 _pred = []
                                 for i in range(n):
@@ -348,6 +347,8 @@ class Trainer:
                                     if i > 20:
                                         _true.append(ss[i][0].item())
                                         _pred.append(s_pred[0].item())
+                                if not _true:
+                                    continue
                                 _true, _pred = zip(*sorted(zip(_true, _pred)))
                                 aucs.append(metrics.auc(_true, _pred))
                                 true.extend(_true)
@@ -384,7 +385,7 @@ class Trainer:
         optim = self.optimizer(model)
 
         train_ques = ques
-        test_ques = train_ques.split_(args.split_ratio)
+        test_ques = train_ques.split_(1 - args.split_ratio)
 
         best = None
 
