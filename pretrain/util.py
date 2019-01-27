@@ -222,8 +222,7 @@ class SeqBatch:
         seqs = [s[:max_len] for s in seqs]
         mask = [[1] * len(s) + [0] * (max_len - len(s)) for s in seqs]
 
-        max_size = seqs[0].size()
-        trailing_dims = max_size[1:]
+        trailing_dims = seqs[0].size()[1:]
         if batch_first:
             out_dims = (len(seqs), max_len) + trailing_dims
         else:

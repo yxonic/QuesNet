@@ -183,6 +183,92 @@ class RNN(FeatureExtractor):
 
 
 @fret.configurable
+class BiRNN(FeatureExtractor):
+    """Sequence-to-sequence feature extractor based on RNN. Supports different
+    input forms and different RNN types (LSTM/GRU), """
+
+    def __init__(self, _stoi,
+                 emb_size=(256, 'size of embedding vectors'),
+                 rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
+                 layers=(1, 'number of layers'), **kwargs):
+        super(BiRNN, self).__init__(**kwargs)
+
+        rnn_size = self.rnn_size = self.feat_size // 2
+
+        self.stoi = _stoi
+        vocab_size = len(_stoi['word'])
+
+        self.embedding = nn.Embedding(vocab_size, emb_size)
+        embs = load_word2vec(emb_size)
+        if embs is not None:
+            self.load_emb(embs)
+
+        if rnn == 'GRU':
+            self.rnn = nn.GRU(emb_size, rnn_size, layers,
+                              bidirectional=True, batch_first=1)
+            self.h0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+        else:
+            self.rnn = nn.LSTM(emb_size, rnn_size, layers,
+                               bidirectional=True, batch_first=1)
+            self.h0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+            self.c0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+        self.output = nn.Linear(self.feat_size, vocab_size)
+        self.lout = nn.Linear(self.rnn_size, vocab_size)
+        self.rout = nn.Linear(self.rnn_size, vocab_size)
+
+    def load_emb(self, emb):
+        self.embedding.weight.data.copy_(torch.from_numpy(emb))
+
+    def make_batch(self, data, pretrain=False):
+        qs = [[x if isinstance(x, int) else self.stoi['word'].get('{img}') or 0
+               for x in q.content] for q in data]
+        if pretrain:
+            left = [[0, 0] + q for q in qs]
+            right = [q + [0, 0] for q in qs]
+            return SeqBatch(left, device=device), \
+                SeqBatch(right, device=device), \
+                SeqBatch([[0] + q + [0] for q in qs], device=device)
+        return SeqBatch([[0, 0] + q + [0, 0] for q in qs], device=device)
+
+    def forward(self, batch: SeqBatch):
+        packed = batch.packed()
+        emb = self.embedding(packed.data)
+        h = self.init_h(packed.batch_sizes[0])
+        y, h = self.rnn(PackedSequence(emb, packed.batch_sizes), h)
+        if self.config['rnn'] == 'GRU':
+            return y, batch.invert(h.permute(1, 0, 2), 0) \
+                .view(h.size(1), -1)
+        else:
+            return y, batch.invert(h[0].permute(1, 0, 2), 0) \
+                .view(h[0].size(1), -1)
+
+    def pretrain_loss(self, batch):
+        left, right, true = batch
+        left_hid = self(left)[0].data[:, :self.rnn_size]
+        right_hid = self(right)[0].data[:, self.rnn_size:]
+        left_out = self.lout(left_hid)
+        right_out = self.rout(right_hid)
+        bi_out = self.output(torch.cat([left_hid, right_hid], dim=1))
+        true = true.packed().data
+        lloss = F.cross_entropy(left_out, true)
+        rloss = F.cross_entropy(right_out, true)
+        loss = F.cross_entropy(bi_out, true)
+        return {
+            'lloss': lloss,
+            'rloss': rloss,
+            'mloss': loss
+        }
+
+    def init_h(self, batch_size):
+        size = list(self.h0.size())
+        size[1] = batch_size
+        if self.config['rnn'] == 'GRU':
+            return self.h0.expand(size)
+        else:
+            return self.h0.expand(size), self.c0.expand(size)
+
+
+@fret.configurable
 class HRNN(FeatureExtractor):
     """Sequence-to-sequence feature extractor based on RNN. Supports different
     input forms and different RNN types (LSTM/GRU), """
@@ -326,6 +412,231 @@ class HRNN(FeatureExtractor):
             'word_loss': wloss,
             'image_vae_loss': iloss,
             'meta_vae_loss': mloss
+        }
+
+    def init_h(self, batch_size):
+        size = list(self.h0.size())
+        size[1] = batch_size
+        if self.config['rnn'] == 'GRU':
+            return self.h0.expand(size)
+        else:
+            return self.h0.expand(size), self.c0.expand(size)
+
+
+@fret.configurable
+class BiHRNN(FeatureExtractor):
+    """Sequence-to-sequence feature extractor based on RNN. Supports different
+    input forms and different RNN types (LSTM/GRU), """
+    def __init__(self, _stoi,
+                 emb_size=(256, 'size of embedding vectors'),
+                 rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
+                 i_lambda=5., m_lambda=5.,
+                 layers=(1, 'number of layers'), **kwargs):
+        super(BiHRNN, self).__init__(**kwargs)
+
+        feat_size = self.feat_size
+        rnn_size = self.rnn_size = feat_size // 2
+
+        self.stoi = _stoi
+        vocab_size = len(_stoi['word'])
+        self.itos = {v: k for k, v in self.stoi['word'].items()}
+
+        self.we = nn.Embedding(vocab_size, emb_size)
+        embs = load_word2vec(emb_size)
+        if embs is not None:
+            self.load_emb(embs)
+
+        self.ie = ImageAE(emb_size)
+        self.me = MetaAE(len(_stoi['grade']), emb_size)
+
+        self.i_lambda = i_lambda
+        self.m_lambda = m_lambda
+
+        if rnn == 'GRU':
+            self.rnn = nn.GRU(emb_size, rnn_size, layers,
+                              bidirectional=True, batch_first=True)
+            self.h0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+        else:
+            self.rnn = nn.LSTM(emb_size, rnn_size, layers,
+                               bidirectional=True, batch_first=True)
+            self.h0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+            self.c0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+
+        self.woutput = nn.Linear(feat_size, vocab_size)
+        self.ioutput = nn.Linear(feat_size, emb_size)
+        self.moutput = nn.Linear(feat_size, emb_size)
+
+        self.lwoutput = nn.Linear(rnn_size, vocab_size)
+        self.lioutput = nn.Linear(rnn_size, emb_size)
+        self.lmoutput = nn.Linear(rnn_size, emb_size)
+
+        self.rwoutput = nn.Linear(rnn_size, vocab_size)
+        self.rioutput = nn.Linear(rnn_size, emb_size)
+        self.rmoutput = nn.Linear(rnn_size, emb_size)
+
+        self.ans_decode = nn.GRU(emb_size, feat_size, layers,
+                                 batch_first=True)
+        self.ans_output = nn.Linear(feat_size, vocab_size)
+
+    def load_emb(self, emb):
+        self.we.weight.data.copy_(torch.from_numpy(emb))
+
+    def make_batch(self, data, pretrain=False):
+        """Returns embeddings"""
+        lembs = []
+        rembs = []
+        embs = []
+        gt = []
+        ans_input = []
+        ans_output = []
+        for q in data:
+            meta = torch.zeros(len(self.stoi['grade'])).to(device)
+            meta[q.labels.get('grade') or []] = 1
+            _lembs = [self.we(torch.tensor([0], device=device)),
+                      self.we(torch.tensor([0], device=device)),
+                      self.me.enc(meta.unsqueeze(0))]
+            _rembs = [self.me.enc(meta.unsqueeze(0))]
+            _embs = [self.we(torch.tensor([0], device=device)),
+                     self.we(torch.tensor([0], device=device))]
+            _gt = [torch.tensor([0], device=device), meta]
+            for w in q.content:
+                if isinstance(w, int):
+                    word = torch.tensor([w], device=device)
+                    item = self.we(word)
+                    _lembs.append(item)
+                    _rembs.append(item)
+                    _gt.append(word)
+                else:
+                    im = to_tensor(w).to(device)
+                    item = self.ie.enc(im.unsqueeze(0))
+                    _lembs.append(item)
+                    _rembs.append(item)
+                    _gt.append(im)
+            _gt.append(torch.tensor([0], device=device))
+            _rembs.append(self.we(torch.tensor([0], device=device)))
+            _rembs.append(self.we(torch.tensor([0], device=device)))
+            _embs.append(self.we(torch.tensor([0], device=device)))
+            _embs.append(self.we(torch.tensor([0], device=device)))
+
+            lembs.append(torch.cat(_lembs, dim=0))
+            rembs.append(torch.cat(_rembs, dim=0))
+            embs.append(torch.cat(_embs, dim=0))
+            gt.append(_gt)
+
+            ans_input.append([0] + q.answer)
+            ans_output.append(q.answer + [0])
+
+        lembs = SeqBatch(lembs)
+        rembs = SeqBatch(rembs)
+        embs = SeqBatch(embs)
+        ans_input = SeqBatch(ans_input)
+        ans_output = SeqBatch(ans_output)
+
+        length = sum(lembs.lens)
+        words = []
+        ims = []
+        metas = []
+        p = lembs.packed().data
+        wmask = torch.zeros(length, device=device).byte()
+        imask = torch.zeros(length, device=device).byte()
+        mmask = torch.zeros(length, device=device).byte()
+
+        for i, _gt in enumerate(gt):
+            for j, v in enumerate(_gt):
+                ind = lembs.index((j, i))
+                if v.size() == torch.Size([1]):  # word
+                    words.append((v, ind))
+                    wmask[ind] = 1
+                elif v.dim() == 1:  # meta
+                    metas.append((v.unsqueeze(0), ind))
+                    mmask[ind] = 1
+                else:  # img
+                    ims.append((v.unsqueeze(0), ind))
+                    imask[ind] = 1
+        words = [x[0] for x in sorted(words, key=lambda x: x[1])]
+        ims = [x[0] for x in sorted(ims, key=lambda x: x[1])]
+        metas = [x[0] for x in sorted(metas, key=lambda x: x[1])]
+
+        words = torch.cat(words, dim=0) if words else None
+        ims = torch.cat(ims, dim=0) if ims else None
+        metas = torch.cat(metas, dim=0) if metas else None
+
+        if pretrain:
+            return (
+                lembs, rembs, words, ims, metas, wmask, imask, mmask,
+                embs, ans_input, ans_output
+            )
+        else:
+            return embs
+
+    def forward(self, batch: SeqBatch):
+        packed = batch.packed()
+        h = self.init_h(packed.batch_sizes[0])
+        y, h = self.rnn(packed, h)
+        if self.config['rnn'] == 'GRU':
+            return y, batch.invert(h.permute(1, 0, 2), 0) \
+                .view(h.size(1), -1)
+        else:
+            return y, batch.invert(h[0].permute(1, 0, 2), 0) \
+                .view(h[0].size(1), -1)
+
+    def pretrain_loss(self, batch):
+        left, right, words, ims, metas, wmask, imask, mmask, \
+            inputs, ans_input, ans_output = batch
+
+        _, h = self(inputs)
+        x = ans_input.packed()
+        y, _ = self.ans_decode(PackedSequence(self.we(x.data), x.batch_sizes),
+                               h.unsqueeze(0))
+        floss = F.cross_entropy(self.ans_output(y.data),
+                                ans_output.packed().data)
+
+        left_hid = self(left)[0].data[:, :self.rnn_size]
+        right_hid = self(right)[0].data[:, self.rnn_size:]
+
+        wloss = iloss = mloss = None
+
+        if words is not None:
+            lwfea = torch.masked_select(left_hid, wmask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            lout = self.lwoutput(lwfea)
+            rwfea = torch.masked_select(right_hid, wmask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            rout = self.rwoutput(rwfea)
+            out = self.woutput(torch.cat([lwfea, rwfea], dim=1))
+            wloss = (F.cross_entropy(out, words) +
+                     F.cross_entropy(lout, words) +
+                     F.cross_entropy(rout, words)) / 3.
+
+        if ims is not None:
+            lifea = torch.masked_select(left_hid, imask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            lout = self.lioutput(lifea)
+            rifea = torch.masked_select(right_hid, imask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            rout = self.rioutput(rifea)
+            out = self.ioutput(torch.cat([lifea, rifea], dim=1))
+            iloss = (self.ie.loss(ims, out) +
+                     self.ie.loss(ims, lout) +
+                     self.ie.loss(ims, rout)) * self.i_lambda
+
+        if metas is not None:
+            lmfea = torch.masked_select(left_hid, mmask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            lout = self.lmoutput(lmfea)
+            rmfea = torch.masked_select(right_hid, mmask.unsqueeze(1)) \
+                .view(-1, self.rnn_size)
+            rout = self.rmoutput(rmfea)
+            out = self.moutput(torch.cat([lmfea, rmfea], dim=1))
+            mloss = (self.me.loss(metas, out) +
+                     self.me.loss(metas, lout) +
+                     self.me.loss(metas, rout)) * self.m_lambda
+
+        return {
+            'f_loss': floss,
+            'word_loss': wloss,
+            'image_loss': iloss,
+            'meta_loss': mloss
         }
 
     def init_h(self, batch_size):
@@ -662,7 +973,32 @@ def merge_last(x, n_dims):
     return x.view(*s[:-n_dims], -1)
 
 
+
+class AE(nn.Module):
+    factor = 1
+
+    def enc(self, item):
+        return self.encoder(item)
+
+    def dec(self, item):
+        return self.decoder(item)
+
+    def loss(self, item, emb=None):
+        if emb is None:
+            emb = self.enc(item)
+            out = self.dec(emb)
+        else:
+            out = self.dec(emb)
+
+        return self.recons_loss(out, item)
+
+    def forward(self, item):
+        return self.enc(item)
+
+
 class VAE(nn.Module):
+    factor = 2
+
     def enc(self, item):
         return self.encoder(item)
 
@@ -698,7 +1034,7 @@ class VAE(nn.Module):
         return out, mu, logvar
 
 
-class ImageAE(VAE):
+class ImageAE(AE):
     def __init__(self, emb_size):
         super().__init__()
         self.recons_loss = nn.MSELoss()
@@ -712,7 +1048,7 @@ class ImageAE(VAE):
             nn.Conv2d(32, emb_size, 3, stride=2)
         )
         self._decoder = nn.Sequential(
-            nn.ConvTranspose2d(emb_size // 2, 32, 3, stride=2),
+            nn.ConvTranspose2d(emb_size // self.factor, 32, 3, stride=2),
             nn.ReLU(True),
             nn.ConvTranspose2d(32, 16, 5, stride=3, padding=1),
             nn.ReLU(True),
@@ -729,7 +1065,7 @@ class ImageAE(VAE):
         return self._decoder(emb[:, :, None, None])
 
 
-class MetaAE(VAE):
+class MetaAE(AE):
     def __init__(self, meta_size, emb_size):
         super().__init__()
         self.emb_size = emb_size
@@ -737,7 +1073,8 @@ class MetaAE(VAE):
         self.encoder = nn.Sequential(nn.Linear(meta_size, emb_size),
                                      nn.ReLU(True),
                                      nn.Linear(emb_size, emb_size))
-        self.decoder = nn.Sequential(nn.Linear(emb_size // 2, emb_size),
+        self.decoder = nn.Sequential(nn.Linear(emb_size // self.factor,
+                                               emb_size),
                                      nn.ReLU(True),
                                      nn.Linear(emb_size, meta_size))
 
