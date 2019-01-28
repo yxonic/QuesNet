@@ -8,7 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn.utils.rnn import PackedSequence
+from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence
 from torchvision.transforms.functional import to_tensor
 
 from .dataloader import load_word2vec
@@ -430,7 +430,9 @@ class BiHRNN(FeatureExtractor):
     def __init__(self, _stoi,
                  emb_size=(256, 'size of embedding vectors'),
                  rnn=('LSTM', 'size of rnn hidden states', ['LSTM', 'GRU']),
-                 i_lambda=5., m_lambda=5.,
+                 lambda_input=([1., 1., 1.],
+                               'input lambda: text, image, meta'),
+                 lambda_loss=([1., 1.], 'loss lambda: low, high'),
                  layers=(1, 'number of layers'), **kwargs):
         super(BiHRNN, self).__init__(**kwargs)
 
@@ -449,8 +451,8 @@ class BiHRNN(FeatureExtractor):
         self.ie = ImageAE(emb_size)
         self.me = MetaAE(len(_stoi['grade']), emb_size)
 
-        self.i_lambda = i_lambda
-        self.m_lambda = m_lambda
+        self.lambda_input = lambda_input
+        self.lambda_loss = lambda_loss
 
         if rnn == 'GRU':
             self.rnn = nn.GRU(emb_size, rnn_size, layers,
@@ -461,6 +463,10 @@ class BiHRNN(FeatureExtractor):
                                bidirectional=True, batch_first=True)
             self.h0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
             self.c0 = nn.Parameter(torch.rand(layers * 2, 1, rnn_size))
+
+        self.proj_q = nn.Linear(feat_size, feat_size)
+        self.proj_k = nn.Linear(feat_size, feat_size)
+        self.proj_v = nn.Linear(feat_size, feat_size)
 
         self.woutput = nn.Linear(feat_size, vocab_size)
         self.ioutput = nn.Linear(feat_size, emb_size)
@@ -478,6 +484,8 @@ class BiHRNN(FeatureExtractor):
                                  batch_first=True)
         self.ans_output = nn.Linear(feat_size, vocab_size)
 
+        self.drop = nn.Dropout(0.2)
+
     def load_emb(self, emb):
         self.we.weight.data.copy_(torch.from_numpy(emb))
 
@@ -494,21 +502,21 @@ class BiHRNN(FeatureExtractor):
             meta[q.labels.get('grade') or []] = 1
             _lembs = [self.we(torch.tensor([0], device=device)),
                       self.we(torch.tensor([0], device=device)),
-                      self.me.enc(meta.unsqueeze(0))]
-            _rembs = [self.me.enc(meta.unsqueeze(0))]
+                      self.me.enc(meta.unsqueeze(0)) * self.lambda_input[2]]
+            _rembs = [self.me.enc(meta.unsqueeze(0)) * self.lambda_input[2]]
             _embs = [self.we(torch.tensor([0], device=device)),
                      self.we(torch.tensor([0], device=device))]
             _gt = [torch.tensor([0], device=device), meta]
             for w in q.content:
                 if isinstance(w, int):
                     word = torch.tensor([w], device=device)
-                    item = self.we(word)
+                    item = self.we(word) * self.lambda_input[0]
                     _lembs.append(item)
                     _rembs.append(item)
                     _gt.append(word)
                 else:
                     im = to_tensor(w).to(device)
-                    item = self.ie.enc(im.unsqueeze(0))
+                    item = self.ie.enc(im.unsqueeze(0)) * self.lambda_input[1]
                     _lembs.append(item)
                     _rembs.append(item)
                     _gt.append(im)
@@ -572,13 +580,24 @@ class BiHRNN(FeatureExtractor):
     def forward(self, batch: SeqBatch):
         packed = batch.packed()
         h = self.init_h(packed.batch_sizes[0])
-        y, h = self.rnn(packed, h)
-        if self.config['rnn'] == 'GRU':
-            return y, batch.invert(h.permute(1, 0, 2), 0) \
-                .view(h.size(1), -1)
-        else:
-            return y, batch.invert(h[0].permute(1, 0, 2), 0) \
-                .view(h[0].size(1), -1)
+        y, _ = self.rnn(packed, h)
+
+        hs, lens = pad_packed_sequence(y, batch_first=True)
+        mask = [[1] * lens[i].item() + [0] * (lens[0] - lens[i]).item()
+                for i in range(len(lens))]
+        mask = torch.tensor(mask).byte().to(device)
+
+        # hs: (B, S, D), mask: (B, S)
+        q, k, v = self.proj_q(hs), self.proj_k(hs), self.proj_v(hs)
+
+        scores = q @ k.transpose(-2, -1) / np.sqrt(k.size(-1))  # (B, S, S)
+        if mask is not None:
+            mask = mask.float()
+            scores -= 1e9 * (1.0 - mask.unsqueeze(1))
+        scores = self.drop(F.softmax(scores, dim=-1))  # (B, S, S)
+        h = (scores @ v).max(1)[0]  # (B, D)
+
+        return y, batch.invert(h, 0)
 
     def pretrain_loss(self, batch):
         left, right, words, ims, metas, wmask, imask, mmask, \
@@ -606,7 +625,8 @@ class BiHRNN(FeatureExtractor):
             out = self.woutput(torch.cat([lwfea, rwfea], dim=1))
             wloss = (F.cross_entropy(out, words) +
                      F.cross_entropy(lout, words) +
-                     F.cross_entropy(rout, words)) / 3.
+                     F.cross_entropy(rout, words)) * self.lambda_input[0] / 3
+            wloss *= self.lambda_loss[0]
 
         if ims is not None:
             lifea = torch.masked_select(left_hid, imask.unsqueeze(1)) \
@@ -618,7 +638,8 @@ class BiHRNN(FeatureExtractor):
             out = self.ioutput(torch.cat([lifea, rifea], dim=1))
             iloss = (self.ie.loss(ims, out) +
                      self.ie.loss(ims, lout) +
-                     self.ie.loss(ims, rout)) * self.i_lambda
+                     self.ie.loss(ims, rout)) * self.lambda_input[1] / 3
+            iloss *= self.lambda_loss[0]
 
         if metas is not None:
             lmfea = torch.masked_select(left_hid, mmask.unsqueeze(1)) \
@@ -630,10 +651,11 @@ class BiHRNN(FeatureExtractor):
             out = self.moutput(torch.cat([lmfea, rmfea], dim=1))
             mloss = (self.me.loss(metas, out) +
                      self.me.loss(metas, lout) +
-                     self.me.loss(metas, rout)) * self.m_lambda
+                     self.me.loss(metas, rout)) * self.lambda_input[2] / 3
+            mloss *= self.lambda_loss[0]
 
         return {
-            'f_loss': floss,
+            'field_loss': floss * self.lambda_loss[1],
             'word_loss': wloss,
             'image_loss': iloss,
             'meta_loss': mloss
@@ -971,7 +993,6 @@ def merge_last(x, n_dims):
     s = x.size()
     assert 1 < n_dims < len(s)
     return x.view(*s[:-n_dims], -1)
-
 
 
 class AE(nn.Module):
